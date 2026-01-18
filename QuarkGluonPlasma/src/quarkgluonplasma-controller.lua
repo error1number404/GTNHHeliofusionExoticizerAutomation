@@ -346,7 +346,7 @@ function quarkGluonPlasmaController:new(
   function obj:configureMultipleItemSlots(interfaceProxy, dbIndex, amount)
     local slots = {}
     local remainingAmount = amount
-    local maxSlots = 6 -- Max 6 slots available
+    local maxSlots = 9 -- Max 9 slots available
     local maxPerSlot = 64 -- Each slot holds 64 items
     
     for slot = 1, maxSlots do
