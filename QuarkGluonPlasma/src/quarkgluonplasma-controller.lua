@@ -313,13 +313,21 @@ function quarkGluonPlasmaController:new(
   ---@private
   function obj:configureMultipleFluidSlots(interfaceProxy, dbIndex, amount)
     local slots = {}
-    local slotsNeeded = math.ceil(amount / 16000) -- Each slot holds 16000L
-    slotsNeeded = math.min(slotsNeeded, 6) -- Max 6 slots available
+    local remainingAmount = amount
+    local maxSlots = 6 -- Max 6 slots available
+    local maxPerSlot = 16000 -- Each slot holds 16000L
     
-    for slot = 1, slotsNeeded do
-      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex)
+    for slot = 1, maxSlots do
+      if remainingAmount <= 0 then
+        break
+      end
+      
+      -- Use as much as possible per slot (up to 16000L)
+      local slotAmount = math.min(remainingAmount, maxPerSlot)
+      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex, slotAmount)
       if result then
         table.insert(slots, slot)
+        remainingAmount = remainingAmount - slotAmount
       else
         event.push("log_warning", "Failed to configure fluid slot "..slot..", continuing with "..#slots.." slots")
         break
@@ -337,13 +345,21 @@ function quarkGluonPlasmaController:new(
   ---@private
   function obj:configureMultipleItemSlots(interfaceProxy, dbIndex, amount)
     local slots = {}
-    local slotsNeeded = math.ceil(amount / 64) -- Each slot holds 64 items
-    slotsNeeded = math.min(slotsNeeded, 6) -- Max 6 slots available
+    local remainingAmount = amount
+    local maxSlots = 6 -- Max 6 slots available
+    local maxPerSlot = 64 -- Each slot holds 64 items
     
-    for slot = 1, slotsNeeded do
-      local result = interfaceProxy.setInterfaceConfiguration(slot, self.database.address, dbIndex)
+    for slot = 1, maxSlots do
+      if remainingAmount <= 0 then
+        break
+      end
+      
+      -- Use as much as possible per slot (up to 64 items)
+      local slotAmount = math.min(remainingAmount, maxPerSlot)
+      local result = interfaceProxy.setInterfaceConfiguration(slot, self.database.address, dbIndex, slotAmount)
       if result then
         table.insert(slots, slot)
+        remainingAmount = remainingAmount - slotAmount
       else
         event.push("log_warning", "Failed to configure item slot "..slot..", continuing with "..#slots.." slots")
         break
