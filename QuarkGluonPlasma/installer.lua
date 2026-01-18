@@ -53,6 +53,4 @@ else
 end
 
 print("\nInstallation complete!")
-os.sleep(2)
-shell.execute("reboot")
 
