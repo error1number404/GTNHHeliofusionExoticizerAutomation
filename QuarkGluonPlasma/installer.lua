@@ -44,7 +44,7 @@ for _, file in ipairs(files) do
 end
 
 -- Download config only if it doesn't exist
-local configPath = shell.getWorkingDirectory() .. "/config.lua"
+local configPath = shell.getWorkingDirectory() .. "/QuarkGluonPlasma/config.lua"
 if not filesystem.exists(configPath) then
   print("Downloading default config.lua...")
   shell.execute("wget -fq " .. repo .. branch .. "/QuarkGluonPlasma/config.lua " .. configPath)
