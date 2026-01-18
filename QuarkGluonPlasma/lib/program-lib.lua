@@ -228,6 +228,15 @@ function program:new(logger, enableAutoUpdate, version, repository, archiveName)
     local width = #self.logo[1] + 2
     local height = #self.logo + 3
 
+    local maxWidth, maxHeight = self.gpu.maxResolution()
+    
+    -- Check if the requested resolution is supported
+    if width > maxWidth or height > maxHeight then
+      -- If resolution is too large, skip logo display or use maximum available resolution
+      -- For now, we'll skip the logo display to avoid errors
+      return
+    end
+
     self.gpu.setResolution(width, height)
     self.gpu.fill(1, 1, width, height, " ")
 
