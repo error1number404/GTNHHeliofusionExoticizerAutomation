@@ -333,9 +333,11 @@ function quarkGluonPlasmaController:new(
   ---@return boolean
   ---@private
   function obj:configureItemInterface(interfaceProxy, side, dbIndex, amount)
-    -- Set interface configuration (assuming similar method exists for items)
-    -- If the method name is different, we'll need to adjust
-    local result = interfaceProxy.setInterfaceConfiguration(side, self.database.address, dbIndex)
+    -- Convert side value (0-5) to slot number (1-9)
+    -- In AE2, slots 1-6 correspond to sides: bottom(0), top(1), north(2), south(3), west(4), east(5)
+    local slot_number = side + 1
+    -- Set interface configuration using slot number
+    local result = interfaceProxy.setInterfaceConfiguration(slot_number, self.database.address, dbIndex)
     if not result then
       return false
     end
