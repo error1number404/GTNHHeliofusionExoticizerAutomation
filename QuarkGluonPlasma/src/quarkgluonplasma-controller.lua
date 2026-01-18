@@ -347,16 +347,17 @@ function quarkGluonPlasmaController:new(
 
   ---Clear interface configuration
   ---@param interfaceProxy table
-  ---@param side number
-  ---@param isLiquid boolean
+  ---@param side number The side value (0-5) which will be converted to slot number (1-9)
+  ---@param isLiquid boolean (unused, kept for compatibility)
   ---@return boolean
   ---@private
   function obj:clearInterfaceConfiguration(interfaceProxy, side, isLiquid)
-    if isLiquid then
-      return interfaceProxy.clearFluidInterfaceConfiguration(side)
-    else
-      return interfaceProxy.clearItemInterfaceConfiguration(side)
-    end
+    -- Convert side value (0-5) to slot number (1-9)
+    -- In AE2, slots 1-6 correspond to sides: bottom(0), top(1), north(2), south(3), west(4), east(5)
+    local slot_number = side + 1
+    -- Call setInterfaceConfiguration with only the slot number to clear the configuration
+    local success = interfaceProxy.setInterfaceConfiguration(slot_number)
+    return success or false
   end
 
   ---Transfer dusts and liquids to Plasma module using transposer with interface configuration
