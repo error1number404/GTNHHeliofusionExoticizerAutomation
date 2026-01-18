@@ -13,6 +13,10 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field outputTransposerAddress string
 ---@field plasmaTransposerAddress string
 ---@field mainTransposerAddress string
+---@field outputTransposerOutputSide number -- Side of output transposer connected to output interface
+---@field outputTransposerPlasmaSide number -- Side of output transposer connected to plasma interface
+---@field mainTransposerMainSide number -- Side of main transposer connected to main interface
+---@field mainTransposerPlasmaSide number -- Side of main transposer connected to plasma interface
 ---@field redstoneIoAddress string
 ---@field redstoneIoSide number
 
@@ -35,6 +39,10 @@ function quarkGluonPlasmaController:newFormConfig(config)
     config.outputTransposerAddress,
     config.plasmaTransposerAddress,
     config.mainTransposerAddress,
+    config.outputTransposerOutputSide,
+    config.outputTransposerPlasmaSide,
+    config.mainTransposerMainSide,
+    config.mainTransposerPlasmaSide,
     config.redstoneIoAddress,
     config.redstoneIoSide
   )
@@ -47,6 +55,10 @@ end
 ---@param outputTransposerAddress string
 ---@param plasmaTransposerAddress string
 ---@param mainTransposerAddress string
+---@param outputTransposerOutputSide number
+---@param outputTransposerPlasmaSide number
+---@param mainTransposerMainSide number
+---@param mainTransposerPlasmaSide number
 ---@param redstoneIoAddress string
 ---@param redstoneIoSide number
 ---@return QuarkGluonPlasmaController
@@ -57,6 +69,10 @@ function quarkGluonPlasmaController:new(
   outputTransposerAddress,
   plasmaTransposerAddress,
   mainTransposerAddress,
+  outputTransposerOutputSide,
+  outputTransposerPlasmaSide,
+  mainTransposerMainSide,
+  mainTransposerPlasmaSide,
   redstoneIoAddress,
   redstoneIoSide)
 
@@ -72,7 +88,10 @@ function quarkGluonPlasmaController:new(
   obj.redstoneIoProxy = nil
 
   obj.redstoneIoSide = redstoneIoSide
-  obj.transposerDefaultSide = sides.down
+  obj.outputTransposerOutputSide = outputTransposerOutputSide
+  obj.outputTransposerPlasmaSide = outputTransposerPlasmaSide
+  obj.mainTransposerMainSide = mainTransposerMainSide
+  obj.mainTransposerPlasmaSide = mainTransposerPlasmaSide
 
   obj.stateMachine = stateMachineLib:new()
 
@@ -226,7 +245,7 @@ function quarkGluonPlasmaController:new(
     return outputs, count
   end
 
-  ---Transfer dusts and liquids to Plasma module
+  ---Transfer dusts and liquids to Plasma module using transposer
   ---@return boolean
   ---@private
   function obj:transferDustsAndLiquids()
@@ -238,68 +257,106 @@ function quarkGluonPlasmaController:new(
       if output.isLiquid then
         -- Transfer liquid + 999L for each L
         local amountToTransfer = output.count + 999
-        event.push("log_info", "Transferring "..amountToTransfer.."L of "..label.." to Plasma module")
+        event.push("log_info", "Transferring "..amountToTransfer.."L of "..label.." to Plasma module via transposer")
         
-        -- Get fluid from output network
-        local fluids = self.outputMeInterfaceProxy.getFluidsInNetwork()
-        local foundFluid = nil
+        -- Use output transposer to transfer fluid from output interface to plasma interface
+        local transferred = 0
+        local maxAttempts = 100
+        local attempt = 0
         
-        for _, fluid in pairs(fluids) do
-          if fluid.label == output.originalLabel or string.match(fluid.label, output.originalLabel) then
-            foundFluid = fluid
-            break
+        while transferred < amountToTransfer and attempt < maxAttempts do
+          attempt = attempt + 1
+          
+          -- Transfer fluid using transposer (from output side to plasma side)
+          local transferAmount = math.min(amountToTransfer - transferred, 1000) -- Transfer in chunks
+          local result = self.outputTransposerProxy.transferFluid(
+            self.outputTransposerOutputSide,
+            self.outputTransposerPlasmaSide,
+            transferAmount
+          )
+          
+          if result then
+            transferred = transferred + transferAmount
+            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." (total: "..transferred.."L)")
+          else
+            -- Check if fluid is still available
+            local fluids = self.outputMeInterfaceProxy.getFluidsInNetwork()
+            local found = false
+            for _, fluid in pairs(fluids) do
+              if fluid.label == output.originalLabel or string.match(fluid.label, output.originalLabel) then
+                found = true
+                break
+              end
+            end
+            
+            if not found then
+              event.push("log_warning", "Fluid "..label.." no longer available in output network")
+              break
+            end
+            
+            -- Wait a bit before retrying
+            os.sleep(0.1)
           end
         end
         
-        if foundFluid then
-          -- Export to plasma module using exportFluid if available, otherwise use pattern
-          local success = false
-          if self.plasmaMeInterfaceProxy.exportFluid then
-            success = self.plasmaMeInterfaceProxy.exportFluid(foundFluid, amountToTransfer)
-          else
-            -- Alternative: use pattern-based export
-            event.push("log_warning", "exportFluid not available, using alternative method")
-            success = true -- Assume success for now
-          end
-          
-          if success == false then
-            event.push("log_error", "Failed to export "..label.." to Plasma module")
-            return false
-          end
+        if transferred < amountToTransfer then
+          event.push("log_error", "Only transferred "..transferred.."L of "..label.." out of "..amountToTransfer.."L requested")
+          return false
         else
-          event.push("log_warning", "Fluid "..label.." not found in output network")
+          event.push("log_info", "Successfully transferred "..transferred.."L of "..label.." to Plasma module")
         end
       else
         -- Transfer dusts + 8 dusts for each dust
         local amountToTransfer = output.count + (8 * output.count)
-        event.push("log_info", "Transferring "..amountToTransfer.." of "..label.." dust to Plasma module")
+        event.push("log_info", "Transferring "..amountToTransfer.." of "..label.." dust to Plasma module via transposer")
         
-        -- Get item from output network
-        local items = self.outputMeInterfaceProxy.getItemsInNetwork({
-          label = output.originalLabel
-        })
+        -- Use output transposer to transfer items from output interface to plasma interface
+        local transferred = 0
+        local maxAttempts = 100
+        local attempt = 0
         
-        if items and #items > 0 then
-          local item = items[1]
-          local available = item.size or 0
-          local toTransfer = math.min(available, amountToTransfer)
+        while transferred < amountToTransfer and attempt < maxAttempts do
+          attempt = attempt + 1
           
-          -- Export to plasma module using exportItem if available
-          local success = false
-          if self.plasmaMeInterfaceProxy.exportItem then
-            success = self.plasmaMeInterfaceProxy.exportItem(item, toTransfer)
+          -- Check available items
+          local items = self.outputMeInterfaceProxy.getItemsInNetwork({
+            label = output.originalLabel
+          })
+          
+          if items and #items > 0 then
+            local item = items[1]
+            local available = item.size or 0
+            
+            if available > 0 then
+              -- Transfer items using transposer (from output side to plasma side)
+              local transferAmount = math.min(available, amountToTransfer - transferred, 64) -- Transfer in stacks
+              local result = self.outputTransposerProxy.transferItem(
+                self.outputTransposerOutputSide,
+                self.outputTransposerPlasmaSide,
+                transferAmount
+              )
+              
+              if result then
+                transferred = transferred + transferAmount
+                event.push("log_info", "Transferred "..transferAmount.." of "..label.." (total: "..transferred..")")
+              else
+                os.sleep(0.1)
+              end
+            else
+              event.push("log_warning", "Item "..label.." no longer available in output network")
+              break
+            end
           else
-            -- Alternative: use pattern-based export
-            event.push("log_warning", "exportItem not available, using alternative method")
-            success = true -- Assume success for now
+            event.push("log_warning", "Item "..label.." not found in output network")
+            break
           end
-          
-          if success == false then
-            event.push("log_error", "Failed to export "..label.." dust to Plasma module")
-            return false
-          end
+        end
+        
+        if transferred < amountToTransfer then
+          event.push("log_error", "Only transferred "..transferred.." of "..label.." out of "..amountToTransfer.." requested")
+          return false
         else
-          event.push("log_warning", "Item "..label.." not found in output network")
+          event.push("log_info", "Successfully transferred "..transferred.." of "..label.." to Plasma module")
         end
       end
     end
@@ -307,7 +364,7 @@ function quarkGluonPlasmaController:new(
     return true
   end
 
-  ---Transfer additional items from main AE network
+  ---Transfer additional items from main AE network to plasma module using transposer
   ---@return boolean
   ---@private
   function obj:transferAdditionalItems()
@@ -329,38 +386,55 @@ function quarkGluonPlasmaController:new(
       end
     end
 
-    -- Request items from main AE network and export to plasma module
+    -- Request items from main AE network and transfer to plasma module via transposer
     for _, itemRequest in pairs(itemsToRequest) do
-      event.push("log_info", "Requesting "..itemRequest.count.." of "..itemRequest.label.." from main AE")
+      event.push("log_info", "Requesting "..itemRequest.count.." of "..itemRequest.label.." from main AE via transposer")
       
-      local items = self.mainMeInterfaceProxy.getItemsInNetwork({
-        label = itemRequest.label
-      })
+      local transferred = 0
+      local maxAttempts = 100
+      local attempt = 0
       
-      if items and #items > 0 then
-        local item = items[1]
-        local available = item.size or 0
-        local toTransfer = math.min(available, itemRequest.count)
+      while transferred < itemRequest.count and attempt < maxAttempts do
+        attempt = attempt + 1
         
-        if toTransfer > 0 then
-          -- Export to plasma module using exportItem if available
-          local success = false
-          if self.plasmaMeInterfaceProxy.exportItem then
-            success = self.plasmaMeInterfaceProxy.exportItem(item, toTransfer)
-          else
-            -- Alternative: use pattern-based export
-            event.push("log_warning", "exportItem not available, using alternative method")
-            success = true -- Assume success for now
-          end
+        -- Check available items in main network
+        local items = self.mainMeInterfaceProxy.getItemsInNetwork({
+          label = itemRequest.label
+        })
+        
+        if items and #items > 0 then
+          local item = items[1]
+          local available = item.size or 0
           
-          if success == false then
-            event.push("log_warning", "Failed to export "..itemRequest.label.." from main AE")
+          if available > 0 then
+            -- Transfer items using main transposer (from main side to plasma side)
+            local transferAmount = math.min(available, itemRequest.count - transferred, 64) -- Transfer in stacks
+            local result = self.mainTransposerProxy.transferItem(
+              self.mainTransposerMainSide,
+              self.mainTransposerPlasmaSide,
+              transferAmount
+            )
+            
+            if result then
+              transferred = transferred + transferAmount
+              event.push("log_info", "Transferred "..transferAmount.." of "..itemRequest.label.." (total: "..transferred..")")
+            else
+              os.sleep(0.1)
+            end
           else
-            event.push("log_info", "Successfully exported "..toTransfer.." of "..itemRequest.label)
+            event.push("log_warning", "Item "..itemRequest.label.." no longer available in main network")
+            break
           end
+        else
+          event.push("log_warning", "Item "..itemRequest.label.." not found in main AE network")
+          break
         end
+      end
+      
+      if transferred < itemRequest.count then
+        event.push("log_warning", "Only transferred "..transferred.." of "..itemRequest.label.." out of "..itemRequest.count.." requested")
       else
-        event.push("log_warning", "Item "..itemRequest.label.." not found in main AE network")
+        event.push("log_info", "Successfully transferred "..transferred.." of "..itemRequest.label.." from main AE")
       end
     end
 

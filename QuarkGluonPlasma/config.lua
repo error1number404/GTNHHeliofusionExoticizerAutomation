@@ -32,6 +32,10 @@ local config = {
     outputTransposerAddress = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", -- Address of transposer connected to output adapter.
     plasmaTransposerAddress = "ffffffff-ffff-ffff-ffff-ffffffffffff", -- Address of transposer connected to plasma adapter.
     mainTransposerAddress = "gggggggg-gggg-gggg-gggg-gggggggggggg", -- Address of transposer connected to main adapter.
+    outputTransposerOutputSide = sides.down, -- Side of output transposer connected to output interface.
+    outputTransposerPlasmaSide = sides.up, -- Side of output transposer connected to plasma interface.
+    mainTransposerMainSide = sides.down, -- Side of main transposer connected to main interface.
+    mainTransposerPlasmaSide = sides.up, -- Side of main transposer connected to plasma interface.
     redstoneIoAddress = "dddddddd-dddd-dddd-dddd-dddddddddddd", -- Redstone IO Address.
     redstoneIoSide = sides.east -- Side of the redstone IO which connected to ME Level Emitter or other controller.
   })

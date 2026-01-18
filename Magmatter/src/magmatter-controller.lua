@@ -13,6 +13,8 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field outputTransposerAddress string
 ---@field mainTransposerAddress string
 ---@field inputTransposerAddress string
+---@field mainTransposerMainSide number -- Side of main transposer connected to main interface
+---@field mainTransposerInputSide number -- Side of main transposer connected to input interface
 ---@field redstoneIoAddress string
 ---@field redstoneIoSide number
 
@@ -35,6 +37,8 @@ function magmatterController:newFormConfig(config)
     config.outputTransposerAddress,
     config.mainTransposerAddress,
     config.inputTransposerAddress,
+    config.mainTransposerMainSide,
+    config.mainTransposerInputSide,
     config.redstoneIoAddress,
     config.redstoneIoSide
   )
@@ -47,6 +51,8 @@ end
 ---@param outputTransposerAddress string
 ---@param mainTransposerAddress string
 ---@param inputTransposerAddress string
+---@param mainTransposerMainSide number
+---@param mainTransposerInputSide number
 ---@param redstoneIoAddress string
 ---@param redstoneIoSide number
 ---@return MagmatterController
@@ -57,6 +63,8 @@ function magmatterController:new(
   outputTransposerAddress,
   mainTransposerAddress,
   inputTransposerAddress,
+  mainTransposerMainSide,
+  mainTransposerInputSide,
   redstoneIoAddress,
   redstoneIoSide)
 
@@ -72,7 +80,8 @@ function magmatterController:new(
   obj.redstoneIoProxy = nil
 
   obj.redstoneIoSide = redstoneIoSide
-  obj.transposerDefaultSide = sides.down
+  obj.mainTransposerMainSide = mainTransposerMainSide
+  obj.mainTransposerInputSide = mainTransposerInputSide
 
   obj.stateMachine = stateMachineLib:new()
 
@@ -250,7 +259,7 @@ function magmatterController:new(
     return true
   end
 
-  ---Transfer required liquids to input subnet
+  ---Transfer required liquids to input subnet using transposer
   ---@return boolean
   ---@private
   function obj:transferLiquidsToInput()
@@ -259,27 +268,57 @@ function magmatterController:new(
     end
 
     -- Transfer liquids to input subnet responsible for inputting to Heliofusion Exoticizer
+    -- Using transposer to move fluids from main interface to input interface
     for _, fluidData in pairs(self.stateMachine.data.requiredFluids) do
       local label = fluidData.label
-      local fluid = fluidData.fluid
-      local amountToTransfer = math.min(fluid.amount, fluidData.amount)
+      local amountToTransfer = math.min(fluidData.fluid.amount, fluidData.amount)
       
-      event.push("log_info", "Transferring "..amountToTransfer.."L of "..label.." to input subnet")
+      event.push("log_info", "Transferring "..amountToTransfer.."L of "..label.." to input subnet via transposer")
       
-      -- Export to input subnet using exportFluid if available
-      local success = false
-      if self.inputMeInterfaceProxy.exportFluid then
-        success = self.inputMeInterfaceProxy.exportFluid(fluid, amountToTransfer)
-      else
-        -- Alternative: use pattern-based export
-        event.push("log_warning", "exportFluid not available, using alternative method")
-        success = true -- Assume success for now
+      -- Use transposer to transfer fluid from main interface side to input interface side
+      local transferred = 0
+      local maxAttempts = 100
+      local attempt = 0
+      
+      while transferred < amountToTransfer and attempt < maxAttempts do
+        attempt = attempt + 1
+        
+        -- Transfer fluid using transposer (from main side to input side)
+        local transferAmount = math.min(amountToTransfer - transferred, 1000) -- Transfer in chunks
+        local result = self.mainTransposerProxy.transferFluid(
+          self.mainTransposerMainSide,
+          self.mainTransposerInputSide,
+          transferAmount
+        )
+        
+        if result then
+          transferred = transferred + transferAmount
+          event.push("log_info", "Transferred "..transferAmount.."L of "..label.." (total: "..transferred.."L)")
+        else
+          -- Check if fluid is still available
+          local fluids = self.mainMeInterfaceProxy.getFluidsInNetwork()
+          local found = false
+          for _, fluid in pairs(fluids) do
+            if fluid.label == fluidData.fluid.label or string.match(fluid.label, fluidData.fluid.label) then
+              found = true
+              break
+            end
+          end
+          
+          if not found then
+            event.push("log_warning", "Fluid "..label.." no longer available in main network")
+            break
+          end
+          
+          -- Wait a bit before retrying
+          os.sleep(0.1)
+        end
       end
       
-      if success == false then
-        event.push("log_warning", "Failed to export "..label.." to input subnet")
+      if transferred < amountToTransfer then
+        event.push("log_warning", "Only transferred "..transferred.."L of "..label.." out of "..amountToTransfer.."L requested")
       else
-        event.push("log_info", "Successfully exported "..amountToTransfer.."L of "..label)
+        event.push("log_info", "Successfully transferred "..transferred.."L of "..label.." to input subnet")
       end
     end
 

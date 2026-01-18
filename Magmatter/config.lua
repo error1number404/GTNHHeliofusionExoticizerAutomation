@@ -32,6 +32,8 @@ local config = {
     outputTransposerAddress = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", -- Address of transposer connected to output adapter.
     mainTransposerAddress = "ffffffff-ffff-ffff-ffff-ffffffffffff", -- Address of transposer connected to main adapter.
     inputTransposerAddress = "gggggggg-gggg-gggg-gggg-gggggggggggg", -- Address of transposer connected to input adapter.
+    mainTransposerMainSide = sides.down, -- Side of main transposer connected to main interface.
+    mainTransposerInputSide = sides.up, -- Side of main transposer connected to input interface.
     redstoneIoAddress = "dddddddd-dddd-dddd-dddd-dddddddddddd", -- Redstone IO Address.
     redstoneIoSide = sides.east -- Side of the redstone IO which connected to ME Level Emitter or other controller.
   })
