@@ -20,7 +20,7 @@ local files = {
   "Magmatter/lib/logger-handler/scroll-list-logger-handler-lib.lua",
 }
 
-local dirs = {"src", "lib", "lib/gui-widgets", "lib/logger-handler"}
+local dirs = {"Magmatter/src", "Magmatter/lib", "Magmatter/lib/gui-widgets", "Magmatter/lib/logger-handler"}
 
 -- Create directories
 for _, dir in ipairs(dirs) do
@@ -47,7 +47,7 @@ end
 local configPath = shell.getWorkingDirectory() .. "/config.lua"
 if not filesystem.exists(configPath) then
   print("Downloading default config.lua...")
-  shell.execute("wget -fq " .. repo .. branch .. "/config.lua " .. configPath)
+  shell.execute("wget -fq " .. repo .. branch .. "Magmatter/config.lua " .. configPath)
 else
   print("Config.lua already exists - preserved")
 end
