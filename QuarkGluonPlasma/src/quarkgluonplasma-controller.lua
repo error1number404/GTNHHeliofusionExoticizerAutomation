@@ -418,10 +418,11 @@ function quarkGluonPlasmaController:new(
     
     -- Transfer all fluids from output interface
     for slot, fluidType in pairs(outputFluidSlots) do
-      event.push("log_info", "Transferring "..fluidType.outputAmount.."L of "..fluidType.label.." from output interface")
+      event.push("log_info", "Transferring "..fluidType.outputAmount.."L of "..fluidType.label.." from output interface slot "..slot)
       local transferred = 0
       local maxAttempts = 50
       local attempt = 0
+      local fluidSide = slot - 1 -- Convert slot (1-6) to side (0-5) for transposer
       
       while transferred < fluidType.outputAmount and attempt < maxAttempts do
         attempt = attempt + 1
@@ -429,7 +430,8 @@ function quarkGluonPlasmaController:new(
         local result = self.outputTransposerProxy.transferFluid(
           self.outputTransposerOutputSide,
           self.outputTransposerPlasmaSide,
-          transferAmount
+          transferAmount,
+          fluidSide
         )
         
         if result then
@@ -446,10 +448,11 @@ function quarkGluonPlasmaController:new(
     
     -- Transfer all fluids from main interface
     for slot, fluidType in pairs(mainFluidSlots) do
-      event.push("log_info", "Transferring "..fluidType.mainAmount.."L of "..fluidType.label.." from main interface")
+      event.push("log_info", "Transferring "..fluidType.mainAmount.."L of "..fluidType.label.." from main interface slot "..slot)
       local transferred = 0
       local maxAttempts = 200
       local attempt = 0
+      local fluidSide = slot - 1 -- Convert slot (1-6) to side (0-5) for transposer
       
       while transferred < fluidType.mainAmount and attempt < maxAttempts do
         attempt = attempt + 1
@@ -457,7 +460,8 @@ function quarkGluonPlasmaController:new(
         local result = self.mainTransposerProxy.transferFluid(
           self.mainTransposerMainSide,
           self.mainTransposerPlasmaSide,
-          transferAmount
+          transferAmount,
+          fluidSide
         )
         
         if result then
@@ -590,7 +594,7 @@ function quarkGluonPlasmaController:new(
       
       -- Transfer all items from output interface
       for slot, itemType in pairs(outputItemSlots) do
-        event.push("log_info", "Transferring "..itemType.outputAmount.." of "..itemType.label.." from output interface")
+        event.push("log_info", "Transferring "..itemType.outputAmount.." of "..itemType.label.." from output interface slot "..slot)
         local transferred = 0
         local maxAttempts = 50
         local attempt = 0
@@ -601,7 +605,8 @@ function quarkGluonPlasmaController:new(
           local result = self.outputTransposerProxy.transferItem(
             self.outputTransposerOutputSide,
             self.outputTransposerPlasmaSide,
-            transferAmount
+            transferAmount,
+            slot
           )
           
           if result then
@@ -618,7 +623,7 @@ function quarkGluonPlasmaController:new(
       
       -- Transfer all items from main interface
       for slot, itemType in pairs(mainItemSlots) do
-        event.push("log_info", "Transferring "..itemType.mainAmount.." of "..itemType.label.." from main interface")
+        event.push("log_info", "Transferring "..itemType.mainAmount.." of "..itemType.label.." from main interface slot "..slot)
         local transferred = 0
         local maxAttempts = 200
         local attempt = 0
@@ -629,7 +634,8 @@ function quarkGluonPlasmaController:new(
           local result = self.mainTransposerProxy.transferItem(
             self.mainTransposerMainSide,
             self.mainTransposerPlasmaSide,
-            transferAmount
+            transferAmount,
+            slot
           )
           
           if result then
