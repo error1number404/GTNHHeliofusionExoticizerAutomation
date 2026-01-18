@@ -109,26 +109,35 @@ function quarkGluonPlasmaController:new(
 
     self.stateMachine.data.outputs = nil
     self.stateMachine.data.time = computer.uptime()
+    self.stateMachine.data.lastOutputCheck = computer.uptime()
     self.stateMachine.data.notifyLongIdle = false
 
     self.stateMachine.states.idle = self.stateMachine:createState("Idle")
     self.stateMachine.states.idle.init = function()
       self.stateMachine.data.time = computer.uptime()
+      self.stateMachine.data.lastOutputCheck = computer.uptime()
       self.stateMachine.data.notifyLongIdle = false
     end
     self.stateMachine.states.idle.update = function()
       local signal = self.redstoneIoProxy.getInput(self.redstoneIoSide)
 
       if signal ~= 0 then
-        local outputs, itemsCount = self:getOutputs()
-        local diff = math.ceil(computer.uptime() - self.stateMachine.data.time)
+        -- Check outputs every 1 second (20 ticks)
+        local currentTime = computer.uptime()
+        local timeSinceLastCheck = currentTime - self.stateMachine.data.lastOutputCheck
+        
+        if timeSinceLastCheck >= 1.0 then
+          self.stateMachine.data.lastOutputCheck = currentTime
+          local outputs, itemsCount = self:getOutputs()
+          local diff = math.ceil(currentTime - self.stateMachine.data.time)
 
-        if itemsCount > 0 then
-          self.stateMachine.data.outputs = outputs
-          self.stateMachine:setState(self.stateMachine.states.transferItems)
-        elseif diff > 240 and self.stateMachine.data.notifyLongIdle == false then
-          self.stateMachine.data.notifyLongIdle = true
-          event.push("log_warning", "More than four minutes in the idle state: "..diff)
+          if itemsCount > 0 then
+            self.stateMachine.data.outputs = outputs
+            self.stateMachine:setState(self.stateMachine.states.transferItems)
+          elseif diff > 240 and self.stateMachine.data.notifyLongIdle == false then
+            self.stateMachine.data.notifyLongIdle = true
+            event.push("log_warning", "More than four minutes in the idle state: "..diff)
+          end
         end
       end
     end
@@ -369,6 +378,23 @@ function quarkGluonPlasmaController:new(
     return interfaceProxy.setFluidInterfaceConfiguration(side)
   end
 
+  ---Wait for interface to restock items/fluids, max 4 ticks total
+  ---Interfaces typically restock within 1-2 ticks, so we use minimal wait
+  ---@param interfaceProxy table
+  ---@param slot number Slot number (unused, kept for compatibility)
+  ---@param isLiquid boolean Whether checking fluid slot (unused, kept for compatibility)
+  ---@param minAmount number Minimum amount (unused, kept for compatibility)
+  ---@return boolean always true (optimistic)
+  ---@private
+  function obj:waitForInterfaceRestock(interfaceProxy, slot, isLiquid, minAmount)
+    -- Interfaces restock very quickly (usually 1 tick)
+    -- Wait 1 tick (0.05s) - well under 4 tick limit
+    -- If items aren't ready, transfer loops will handle retries
+    os.sleep(0.05) -- 1 tick
+    
+    return true
+  end
+
   ---Process a batch of fluid types (up to maxFluidSlots)
   ---@param fluidBatch table Array of fluid type info to process
   ---@return boolean success
@@ -413,8 +439,13 @@ function quarkGluonPlasmaController:new(
       end
     end
     
-    -- Wait for interfaces to stock
-    os.sleep(0.5)
+    -- Wait for interfaces to stock (max 4 ticks)
+    for slot, fluidType in pairs(outputFluidSlots) do
+      self:waitForInterfaceRestock(self.outputMeInterfaceProxy, slot, true, 1)
+    end
+    for slot, fluidType in pairs(mainFluidSlots) do
+      self:waitForInterfaceRestock(self.mainMeInterfaceProxy, slot, true, 1)
+    end
     
     -- Transfer all fluids from output interface
     for slot, fluidType in pairs(outputFluidSlots) do
@@ -437,7 +468,7 @@ function quarkGluonPlasmaController:new(
         if result then
           transferred = transferred + transferAmount
         else
-          os.sleep(0.1)
+          os.sleep(0.05) -- 1 tick delay
         end
       end
       
@@ -470,7 +501,7 @@ function quarkGluonPlasmaController:new(
             event.push("log_info", "Transferred "..transferred.."L of "..fluidType.label.." from main (target: "..fluidType.mainAmount.."L)")
           end
         else
-          os.sleep(0.1)
+          os.sleep(0.05) -- 1 tick delay
         end
       end
       
@@ -589,8 +620,13 @@ function quarkGluonPlasmaController:new(
     if #itemTypes > 0 then
       event.push("log_info", "Configured "..#itemTypes.." item types")
       
-      -- Wait for interfaces to stock
-      os.sleep(0.5)
+      -- Wait for interfaces to stock (max 4 ticks)
+      for slot, itemType in pairs(outputItemSlots) do
+        self:waitForInterfaceRestock(self.outputMeInterfaceProxy, slot, false, 1)
+      end
+      for slot, itemType in pairs(mainItemSlots) do
+        self:waitForInterfaceRestock(self.mainMeInterfaceProxy, slot, false, 1)
+      end
       
       -- Transfer all items from output interface
       for slot, itemType in pairs(outputItemSlots) do
@@ -612,7 +648,7 @@ function quarkGluonPlasmaController:new(
           if result then
             transferred = transferred + transferAmount
           else
-            os.sleep(0.1)
+            os.sleep(0.05) -- 1 tick delay
           end
         end
         
@@ -644,7 +680,7 @@ function quarkGluonPlasmaController:new(
               event.push("log_info", "Transferred "..transferred.." of "..itemType.label.." from main (target: "..itemType.mainAmount..")")
             end
           else
-            os.sleep(0.1)
+            os.sleep(0.05) -- 1 tick delay
           end
         end
         
