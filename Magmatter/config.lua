@@ -29,6 +29,9 @@ local config = {
     outputMeInterfaceAddress = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", -- Address of me interface in dedicated subnet connected to Heliofusion Exoticizer output.
     mainMeInterfaceAddress = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", -- Address of me interface connected to main AE network.
     inputMeInterfaceAddress = "cccccccc-cccc-cccc-cccc-cccccccccccc", -- Address of me interface in subnet responsible for inputting liquids to Heliofusion Exoticizer.
+    outputTransposerAddress = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", -- Address of transposer connected to output adapter.
+    mainTransposerAddress = "ffffffff-ffff-ffff-ffff-ffffffffffff", -- Address of transposer connected to main adapter.
+    inputTransposerAddress = "gggggggg-gggg-gggg-gggg-gggggggggggg", -- Address of transposer connected to input adapter.
     redstoneIoAddress = "dddddddd-dddd-dddd-dddd-dddddddddddd", -- Redstone IO Address.
     redstoneIoSide = sides.east -- Side of the redstone IO which connected to ME Level Emitter or other controller.
   })

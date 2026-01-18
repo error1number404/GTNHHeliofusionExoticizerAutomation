@@ -1,6 +1,7 @@
 local component = require("component")
 local event = require("event")
 local computer = require("computer")
+local sides = require("sides")
 
 local stateMachineLib = require("lib.state-machine-lib")
 local componentDiscoverLib = require("lib.component-discover-lib")
@@ -9,6 +10,9 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field outputMeInterfaceAddress string
 ---@field mainMeInterfaceAddress string
 ---@field inputMeInterfaceAddress string
+---@field outputTransposerAddress string
+---@field mainTransposerAddress string
+---@field inputTransposerAddress string
 ---@field redstoneIoAddress string
 ---@field redstoneIoSide number
 
@@ -28,6 +32,9 @@ function magmatterController:newFormConfig(config)
     config.outputMeInterfaceAddress,
     config.mainMeInterfaceAddress,
     config.inputMeInterfaceAddress,
+    config.outputTransposerAddress,
+    config.mainTransposerAddress,
+    config.inputTransposerAddress,
     config.redstoneIoAddress,
     config.redstoneIoSide
   )
@@ -37,6 +44,9 @@ end
 ---@param outputMeInterfaceAddress string
 ---@param mainMeInterfaceAddress string
 ---@param inputMeInterfaceAddress string
+---@param outputTransposerAddress string
+---@param mainTransposerAddress string
+---@param inputTransposerAddress string
 ---@param redstoneIoAddress string
 ---@param redstoneIoSide number
 ---@return MagmatterController
@@ -44,6 +54,9 @@ function magmatterController:new(
   outputMeInterfaceAddress,
   mainMeInterfaceAddress,
   inputMeInterfaceAddress,
+  outputTransposerAddress,
+  mainTransposerAddress,
+  inputTransposerAddress,
   redstoneIoAddress,
   redstoneIoSide)
 
@@ -53,9 +66,13 @@ function magmatterController:new(
   obj.outputMeInterfaceProxy = nil
   obj.mainMeInterfaceProxy = nil
   obj.inputMeInterfaceProxy = nil
+  obj.outputTransposerProxy = nil
+  obj.mainTransposerProxy = nil
+  obj.inputTransposerProxy = nil
   obj.redstoneIoProxy = nil
 
   obj.redstoneIoSide = redstoneIoSide
+  obj.transposerDefaultSide = sides.down
 
   obj.stateMachine = stateMachineLib:new()
 
@@ -64,6 +81,9 @@ function magmatterController:new(
     self.outputMeInterfaceProxy = componentDiscoverLib.discoverProxy(outputMeInterfaceAddress, "Output Me Interface", "me_interface")
     self.mainMeInterfaceProxy = componentDiscoverLib.discoverProxy(mainMeInterfaceAddress, "Main Me Interface", "me_interface")
     self.inputMeInterfaceProxy = componentDiscoverLib.discoverProxy(inputMeInterfaceAddress, "Input Me Interface", "me_interface")
+    self.outputTransposerProxy = componentDiscoverLib.discoverProxy(outputTransposerAddress, "Output Transposer", "transposer")
+    self.mainTransposerProxy = componentDiscoverLib.discoverProxy(mainTransposerAddress, "Main Transposer", "transposer")
+    self.inputTransposerProxy = componentDiscoverLib.discoverProxy(inputTransposerAddress, "Input Transposer", "transposer")
     self.redstoneIoProxy = componentDiscoverLib.discoverProxy(redstoneIoAddress, "Redstone io", "redstone")
 
     self.stateMachine.data.outputs = nil

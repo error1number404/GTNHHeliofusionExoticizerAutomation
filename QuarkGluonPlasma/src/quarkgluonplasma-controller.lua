@@ -1,6 +1,7 @@
 local component = require("component")
 local event = require("event")
 local computer = require("computer")
+local sides = require("sides")
 
 local stateMachineLib = require("lib.state-machine-lib")
 local componentDiscoverLib = require("lib.component-discover-lib")
@@ -9,6 +10,9 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field outputMeInterfaceAddress string
 ---@field plasmaMeInterfaceAddress string
 ---@field mainMeInterfaceAddress string
+---@field outputTransposerAddress string
+---@field plasmaTransposerAddress string
+---@field mainTransposerAddress string
 ---@field redstoneIoAddress string
 ---@field redstoneIoSide number
 
@@ -28,6 +32,9 @@ function quarkGluonPlasmaController:newFormConfig(config)
     config.outputMeInterfaceAddress,
     config.plasmaMeInterfaceAddress,
     config.mainMeInterfaceAddress,
+    config.outputTransposerAddress,
+    config.plasmaTransposerAddress,
+    config.mainTransposerAddress,
     config.redstoneIoAddress,
     config.redstoneIoSide
   )
@@ -37,6 +44,9 @@ end
 ---@param outputMeInterfaceAddress string
 ---@param plasmaMeInterfaceAddress string
 ---@param mainMeInterfaceAddress string
+---@param outputTransposerAddress string
+---@param plasmaTransposerAddress string
+---@param mainTransposerAddress string
 ---@param redstoneIoAddress string
 ---@param redstoneIoSide number
 ---@return QuarkGluonPlasmaController
@@ -44,6 +54,9 @@ function quarkGluonPlasmaController:new(
   outputMeInterfaceAddress,
   plasmaMeInterfaceAddress,
   mainMeInterfaceAddress,
+  outputTransposerAddress,
+  plasmaTransposerAddress,
+  mainTransposerAddress,
   redstoneIoAddress,
   redstoneIoSide)
 
@@ -53,9 +66,13 @@ function quarkGluonPlasmaController:new(
   obj.outputMeInterfaceProxy = nil
   obj.plasmaMeInterfaceProxy = nil
   obj.mainMeInterfaceProxy = nil
+  obj.outputTransposerProxy = nil
+  obj.plasmaTransposerProxy = nil
+  obj.mainTransposerProxy = nil
   obj.redstoneIoProxy = nil
 
   obj.redstoneIoSide = redstoneIoSide
+  obj.transposerDefaultSide = sides.down
 
   obj.stateMachine = stateMachineLib:new()
 
@@ -64,6 +81,9 @@ function quarkGluonPlasmaController:new(
     self.outputMeInterfaceProxy = componentDiscoverLib.discoverProxy(outputMeInterfaceAddress, "Output Me Interface", "me_interface")
     self.plasmaMeInterfaceProxy = componentDiscoverLib.discoverProxy(plasmaMeInterfaceAddress, "Plasma Me Interface", "me_interface")
     self.mainMeInterfaceProxy = componentDiscoverLib.discoverProxy(mainMeInterfaceAddress, "Main Me Interface", "me_interface")
+    self.outputTransposerProxy = componentDiscoverLib.discoverProxy(outputTransposerAddress, "Output Transposer", "transposer")
+    self.plasmaTransposerProxy = componentDiscoverLib.discoverProxy(plasmaTransposerAddress, "Plasma Transposer", "transposer")
+    self.mainTransposerProxy = componentDiscoverLib.discoverProxy(mainTransposerAddress, "Main Transposer", "transposer")
     self.redstoneIoProxy = componentDiscoverLib.discoverProxy(redstoneIoAddress, "Redstone io", "redstone")
 
     self.stateMachine.data.outputs = nil

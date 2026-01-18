@@ -29,6 +29,9 @@ local config = {
     outputMeInterfaceAddress = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", -- Address of me interface connected to Heliofusion Exoticizer output.
     plasmaMeInterfaceAddress = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", -- Address of me interface connected to Plasma module dedicated AE.
     mainMeInterfaceAddress = "cccccccc-cccc-cccc-cccc-cccccccccccc", -- Address of me interface connected to main AE network.
+    outputTransposerAddress = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", -- Address of transposer connected to output adapter.
+    plasmaTransposerAddress = "ffffffff-ffff-ffff-ffff-ffffffffffff", -- Address of transposer connected to plasma adapter.
+    mainTransposerAddress = "gggggggg-gggg-gggg-gggg-gggggggggggg", -- Address of transposer connected to main adapter.
     redstoneIoAddress = "dddddddd-dddd-dddd-dddd-dddddddddddd", -- Redstone IO Address.
     redstoneIoSide = sides.east -- Side of the redstone IO which connected to ME Level Emitter or other controller.
   })
