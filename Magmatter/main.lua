@@ -16,15 +16,6 @@ local archiveName = "Magmatter"
 local program = programLib:new(config.logger, config.enableAutoUpdate, version, repository, archiveName)
 local gui = guiLib:new(program)
 
-local logo = {
-"  __  __                        _   _            ",
-" |  \\/  | __ _ _ __   __ _  ___| |_| |_ ___ _ __ ",
-" | |\\/| |/ _` | '_ \\ / _` |/ _ \\ __| __/ _ \\ '__|",
-" | |  | | (_| | | | | (_| |  __/ |_| ||  __/ |   ",
-" |_|  |_|\\__,_|_| |_|\\__, |\\___|\\__|\\__\\___|_|   ",
-"                     |___/                       "
-}
-
 local mainTemplate = {
   width = 60,
   background = gui.palette.black,
@@ -84,7 +75,6 @@ local function clearErrorList()
   logger:clearList()
 end
 
-program:registerLogo(logo)
 program:registerInit(init)
 program:registerThread(loop)
 program:registerTimer(guiLoop, math.huge, 1)

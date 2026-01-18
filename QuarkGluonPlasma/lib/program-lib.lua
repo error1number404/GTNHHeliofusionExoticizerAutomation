@@ -76,14 +76,7 @@ function program:new(logger, enableAutoUpdate, version, repository, archiveName)
   obj.defaultForeground = 0
   obj.defaultBackground = 0
 
-  obj.logo = nil
   obj.init = nil
-
-  ---Register logo
-  ---@param logo string[]
-  function obj:registerLogo(logo)
-    self.logo = logo
-  end
 
   ---Register init function
   ---@param callback function
@@ -174,10 +167,6 @@ function program:new(logger, enableAutoUpdate, version, repository, archiveName)
     self.defaultForeground = self.gpu.getForeground()
     self.defaultBackground = self.gpu.getBackground()
 
-    if self.logo then
-      self:displayLogo()
-    end
-
     logger:init()
 
     if self.enableAutoUpdate then
@@ -220,40 +209,6 @@ function program:new(logger, enableAutoUpdate, version, repository, archiveName)
 
     local _, exception = event.pull("exit")
     self:exit(exception)
-  end
-
-  ---Display logo
-  ---@private
-  function obj:displayLogo()
-    local width = #self.logo[1] + 2
-    local height = #self.logo + 3
-
-    local maxWidth, maxHeight = self.gpu.maxResolution()
-    
-    -- Check if the requested resolution is supported
-    if width > maxWidth or height > maxHeight then
-      -- If resolution is too large, skip logo display or use maximum available resolution
-      -- For now, we'll skip the logo display to avoid errors
-      return
-    end
-
-    self.gpu.setResolution(width, height)
-    self.gpu.fill(1, 1, width, height, " ")
-
-    term.setCursor(1, 2)
-
-    for _, line in pairs(self.logo) do
-      term.write(" "..line.."\n")
-    end
-
-    local currentVersion = self.version ~= nil and self.version.programVersion or "nil"
-
-    term.write("\nversion: "..currentVersion.."\n")
-
-    os.sleep(1)
-
-    self.gpu.fill(1, 1, width, height, " ")
-    self.gpu.setResolution(self.defaultWidth, self.defaultHeight)
   end
 
   ---Get latest version number
