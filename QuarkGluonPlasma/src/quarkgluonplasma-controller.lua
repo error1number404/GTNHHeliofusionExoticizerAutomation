@@ -318,109 +318,177 @@ function quarkGluonPlasmaController:new(
     end
   end
 
-  ---Configure interface slot to stock fluid by type
+  ---Configure a single interface slot to stock fluid by type
   ---Note: Fluids can only be configured by type, not by type and amount.
   ---The interface will always try to pull everything from the network.
   ---@param interfaceProxy table
+  ---@param slot number Slot number (1-6, will be converted to side 0-5)
   ---@param dbIndex number
-  ---@param amount number (unused, kept for API compatibility)
-  ---@return table<number> slots Configured slot numbers (1-6)
+  ---@return boolean success
   ---@private
-  function obj:configureMultipleFluidSlots(interfaceProxy, dbIndex, amount)
-    local slots = {}
-    local maxSlots = 6 -- Max 6 slots available
-    
-    -- Configure one slot per fluid type (fluids pull all available from network)
-    -- We can configure multiple slots for the same type to increase throughput
-    -- but we cannot control the amount per slot
-    for slot = 1, maxSlots do
-      -- Configure slot by type only (no amount parameter)
-      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex)
-      if result then
-        table.insert(slots, slot)
-        -- For fluids, one slot is typically sufficient as it will pull all available
-        -- But we can configure multiple slots if needed for throughput
-        break
-      else
-        event.push("log_warning", "Failed to configure fluid slot "..slot)
-        break
-      end
+  function obj:configureSingleFluidSlot(interfaceProxy, slot, dbIndex)
+    local side = slot - 1 -- Convert slot (1-6) to side (0-5)
+    local result = interfaceProxy.setFluidInterfaceConfiguration(side, self.database.address, dbIndex)
+    if not result then
+      event.push("log_warning", "Failed to configure fluid slot "..slot)
     end
-    
-    if #slots == 0 then
-      event.push("log_error", "Failed to configure any fluid slots")
-    end
-    
-    return slots
+    return result
   end
 
-  ---Configure multiple interface slots to stock item
+  ---Configure a single interface slot to stock item
   ---@param interfaceProxy table
+  ---@param slot number Slot number (1-9)
   ---@param dbIndex number
   ---@param amount number
-  ---@return table<number> slots Configured slot numbers (1-6)
+  ---@return boolean success
   ---@private
-  function obj:configureMultipleItemSlots(interfaceProxy, dbIndex, amount)
-    local slots = {}
-    local remainingAmount = amount
-    local maxSlots = 9 -- Max 9 slots available
-    local maxPerSlot = 64 -- Each slot holds 64 items
+  function obj:configureSingleItemSlot(interfaceProxy, slot, dbIndex, amount)
+    local result = interfaceProxy.setInterfaceConfiguration(slot, self.database.address, dbIndex, amount)
+    if not result then
+      event.push("log_warning", "Failed to configure item slot "..slot)
+    end
+    return result
+  end
+
+  ---Clear a single interface slot configuration for items
+  ---@param interfaceProxy table
+  ---@param slot number Slot number to clear (1-9)
+  ---@return boolean
+  ---@private
+  function obj:clearSingleItemSlot(interfaceProxy, slot)
+    return interfaceProxy.setInterfaceConfiguration(slot)
+  end
+
+  ---Clear a single interface slot configuration for fluids
+  ---@param interfaceProxy table
+  ---@param slot number Slot number to clear (1-6, will be converted to side 0-5)
+  ---@return boolean
+  ---@private
+  function obj:clearSingleFluidSlot(interfaceProxy, slot)
+    local side = slot - 1 -- Convert slot (1-6) to side (0-5)
+    return interfaceProxy.setFluidInterfaceConfiguration(side)
+  end
+
+  ---Process a batch of fluid types (up to maxFluidSlots)
+  ---@param fluidBatch table Array of fluid type info to process
+  ---@return boolean success
+  ---@private
+  function obj:processFluidBatch(fluidBatch)
+    local outputFluidSlots = {} -- Map: slot -> type info
+    local mainFluidSlots = {}    -- Map: slot -> type info
+    local maxFluidSlots = 6
     
-    for slot = 1, maxSlots do
-      if remainingAmount <= 0 then
-        break
+    -- Configure fluid slots
+    for slot = 1, math.min(#fluidBatch, maxFluidSlots) do
+      local fluidType = fluidBatch[slot]
+      
+      -- Configure output interface
+      if self:configureSingleFluidSlot(self.outputMeInterfaceProxy, slot, fluidType.dbIndex) then
+        outputFluidSlots[slot] = fluidType
+      else
+        event.push("log_error", "Failed to configure output fluid slot "..slot.." for "..fluidType.label)
+        -- Clean up already configured slots
+        for s, _ in pairs(outputFluidSlots) do
+          self:clearSingleFluidSlot(self.outputMeInterfaceProxy, s)
+        end
+        for s, _ in pairs(mainFluidSlots) do
+          self:clearSingleFluidSlot(self.mainMeInterfaceProxy, s)
+        end
+        return false
       end
       
-      -- Use as much as possible per slot (up to 64 items)
-      local slotAmount = math.min(remainingAmount, maxPerSlot)
-      local result = interfaceProxy.setInterfaceConfiguration(slot, self.database.address, dbIndex, slotAmount)
-      if result then
-        table.insert(slots, slot)
-        remainingAmount = remainingAmount - slotAmount
+      -- Configure main interface
+      if self:configureSingleFluidSlot(self.mainMeInterfaceProxy, slot, fluidType.dbIndex) then
+        mainFluidSlots[slot] = fluidType
       else
-        event.push("log_warning", "Failed to configure item slot "..slot..", continuing with "..#slots.." slots")
-        break
+        event.push("log_error", "Failed to configure main fluid slot "..slot.." for "..fluidType.label)
+        -- Clean up
+        for s, _ in pairs(outputFluidSlots) do
+          self:clearSingleFluidSlot(self.outputMeInterfaceProxy, s)
+        end
+        for s, _ in pairs(mainFluidSlots) do
+          self:clearSingleFluidSlot(self.mainMeInterfaceProxy, s)
+        end
+        return false
       end
     end
     
-    return slots
-  end
-
-  ---Clear multiple interface slot configurations for items
-  ---@param interfaceProxy table
-  ---@param slots table<number> Slot numbers to clear (1-6)
-  ---@return boolean
-  ---@private
-  function obj:clearMultipleItemSlots(interfaceProxy, slots)
-    local allSuccess = true
-    for _, slot in ipairs(slots) do
-      local success = interfaceProxy.setInterfaceConfiguration(slot)
-      if not success then
-        allSuccess = false
+    -- Wait for interfaces to stock
+    os.sleep(0.5)
+    
+    -- Transfer all fluids from output interface
+    for slot, fluidType in pairs(outputFluidSlots) do
+      event.push("log_info", "Transferring "..fluidType.outputAmount.."L of "..fluidType.label.." from output interface")
+      local transferred = 0
+      local maxAttempts = 50
+      local attempt = 0
+      
+      while transferred < fluidType.outputAmount and attempt < maxAttempts do
+        attempt = attempt + 1
+        local transferAmount = math.min(fluidType.outputAmount - transferred, 16000)
+        local result = self.outputTransposerProxy.transferFluid(
+          self.outputTransposerOutputSide,
+          self.outputTransposerPlasmaSide,
+          transferAmount
+        )
+        
+        if result then
+          transferred = transferred + transferAmount
+        else
+          os.sleep(0.1)
+        end
+      end
+      
+      if transferred < fluidType.outputAmount then
+        event.push("log_warning", "Only transferred "..transferred.."L of "..fluidType.label.." from output out of "..fluidType.outputAmount.."L requested")
       end
     end
-    return allSuccess
-  end
-
-  ---Clear multiple interface slot configurations for fluids
-  ---@param interfaceProxy table
-  ---@param slots table<number> Slot numbers to clear (1-6, but stored as 1-6, need to convert to side 0-5)
-  ---@return boolean
-  ---@private
-  function obj:clearMultipleFluidSlots(interfaceProxy, slots)
-    local allSuccess = true
-    for _, slot in ipairs(slots) do
-      local side = slot - 1 -- Convert slot (1-6) to side (0-5)
-      -- Clear by setting configuration to nil/empty
-      local success = interfaceProxy.setFluidInterfaceConfiguration(side)
-      if not success then
-        allSuccess = false
+    
+    -- Transfer all fluids from main interface
+    for slot, fluidType in pairs(mainFluidSlots) do
+      event.push("log_info", "Transferring "..fluidType.mainAmount.."L of "..fluidType.label.." from main interface")
+      local transferred = 0
+      local maxAttempts = 200
+      local attempt = 0
+      
+      while transferred < fluidType.mainAmount and attempt < maxAttempts do
+        attempt = attempt + 1
+        local transferAmount = math.min(fluidType.mainAmount - transferred, 16000)
+        local result = self.mainTransposerProxy.transferFluid(
+          self.mainTransposerMainSide,
+          self.mainTransposerPlasmaSide,
+          transferAmount
+        )
+        
+        if result then
+          transferred = transferred + transferAmount
+          if attempt % 20 == 0 then -- Log every 20th attempt to reduce spam
+            event.push("log_info", "Transferred "..transferred.."L of "..fluidType.label.." from main (target: "..fluidType.mainAmount.."L)")
+          end
+        else
+          os.sleep(0.1)
+        end
+      end
+      
+      if transferred < fluidType.mainAmount then
+        event.push("log_warning", "Only transferred "..transferred.."L of "..fluidType.label.." from main out of "..fluidType.mainAmount.."L requested")
       end
     end
-    return allSuccess
+    
+    -- Clear all interface configurations
+    for slot, _ in pairs(outputFluidSlots) do
+      self:clearSingleFluidSlot(self.outputMeInterfaceProxy, slot)
+    end
+    for slot, _ in pairs(mainFluidSlots) do
+      self:clearSingleFluidSlot(self.mainMeInterfaceProxy, slot)
+    end
+    
+    return true
   end
 
   ---Transfer dusts and liquids to Plasma module using transposer with interface configuration
+  ---Optimized to configure all types at once (1 slot per type) to minimize reconfiguration
+  ---Handles up to 7 fluid types by processing in batches (6 per batch)
   ---@return boolean
   ---@private
   function obj:transferDustsAndLiquids()
@@ -428,197 +496,168 @@ function quarkGluonPlasmaController:new(
       return false
     end
 
-    -- Process each requested item/fluid
+    -- Step 1: Create all database entries first
+    local fluidTypes = {}
+    local itemTypes = {}
+    
     for label, output in pairs(self.stateMachine.data.outputs) do
-      -- Create database entry
       local dbIndex = self:createDatabaseEntry(label, output.isLiquid, output.originalLabel)
       if not dbIndex then
         event.push("log_error", "Failed to create database entry for "..label)
         return false
       end
-
+      
       if output.isLiquid then
-        -- Calculate amounts: 1L per L requested from output net, 999L per L requested from main net
-        local outputAmount = output.count * 1  -- 1L per L requested
-        local mainAmount = output.count * 999   -- 999L per L requested
-        
-        -- Configure multiple slots on output interface
-        event.push("log_info", "Configuring output interface for "..outputAmount.."L of "..label.." (1L per L requested)")
-        local outputSlots = self:configureMultipleFluidSlots(self.outputMeInterfaceProxy, dbIndex, outputAmount)
-        if #outputSlots == 0 then
-          event.push("log_error", "Failed to configure any output interface slots for "..label)
-          return false
-        end
-
-        -- Configure multiple slots on main interface
-        event.push("log_info", "Configuring main interface for "..mainAmount.."L of "..label.." (999L per L requested)")
-        local mainSlots = self:configureMultipleFluidSlots(self.mainMeInterfaceProxy, dbIndex, mainAmount)
-        if #mainSlots == 0 then
-          event.push("log_error", "Failed to configure any main interface slots for "..label)
-          -- Clear output interface config
-          self:clearMultipleFluidSlots(self.outputMeInterfaceProxy, outputSlots)
-          return false
-        end
-
-        -- Wait for interfaces to stock
-        os.sleep(0.5)
-
-        -- Transfer from output interface: 1L per L requested
-        event.push("log_info", "Transferring "..outputAmount.."L of "..label.." from output interface to Plasma module")
-        local transferredOutput = 0
-        local maxAttemptsOutput = 50
-        local attemptOutput = 0
-
-        while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
-          attemptOutput = attemptOutput + 1
-          -- Transfer up to 16000L at once (max per slot)
-          local transferAmount = math.min(outputAmount - transferredOutput, 16000)
-          local result = self.outputTransposerProxy.transferFluid(
-            self.outputTransposerOutputSide,
-            self.outputTransposerPlasmaSide,
-            transferAmount
-          )
-
-          if result then
-            transferredOutput = transferredOutput + transferAmount
-            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." from output (total: "..transferredOutput.."L)")
-          else
-            os.sleep(0.1)
-          end
-        end
-
-        if transferredOutput < outputAmount then
-          event.push("log_warning", "Only transferred "..transferredOutput.."L of "..label.." from output out of "..outputAmount.."L requested")
-        end
-
-        -- Transfer from main interface: 999L per L requested
-        event.push("log_info", "Transferring "..mainAmount.."L of "..label.." from main interface to Plasma module")
-        local transferred = 0
-        local maxAttempts = 200
-        local attempt = 0
-
-        while transferred < mainAmount and attempt < maxAttempts do
-          attempt = attempt + 1
-          -- Transfer up to 16000L at once (max per slot)
-          local transferAmount = math.min(mainAmount - transferred, 16000)
-          local result = self.mainTransposerProxy.transferFluid(
-            self.mainTransposerMainSide,
-            self.mainTransposerPlasmaSide,
-            transferAmount
-          )
-
-          if result then
-            transferred = transferred + transferAmount
-            if attempt % 10 == 0 then -- Log every 10th attempt to reduce spam
-              event.push("log_info", "Transferred "..transferred.."L of "..label.." from main (target: "..mainAmount.."L)")
-            end
-          else
-            -- Wait a bit for interface to restock
-            os.sleep(0.1)
-          end
-        end
-
-        if transferred < mainAmount then
-          event.push("log_warning", "Only transferred "..transferred.."L of "..label.." from main out of "..mainAmount.."L requested")
-        end
-
-        -- Clear interface configurations
-        self:clearMultipleFluidSlots(self.outputMeInterfaceProxy, outputSlots)
-        self:clearMultipleFluidSlots(self.mainMeInterfaceProxy, mainSlots)
-        event.push("log_info", "Cleared interface configurations for "..label)
-
+        table.insert(fluidTypes, {
+          label = label,
+          originalLabel = output.originalLabel,
+          dbIndex = dbIndex,
+          outputAmount = output.count * 1,  -- 1L per L requested
+          mainAmount = output.count * 999    -- 999L per L requested
+        })
       else
-        -- Calculate amounts: 1 per dust requested from output net, 8 per dust requested from main net
-        local outputAmount = output.count * 1  -- 1 per dust requested
-        local mainAmount = output.count * 8     -- 8 per dust requested
+        table.insert(itemTypes, {
+          label = label,
+          originalLabel = output.originalLabel,
+          dbIndex = dbIndex,
+          outputAmount = output.count * 1,  -- 1 per dust requested
+          mainAmount = output.count * 8     -- 8 per dust requested
+        })
+      end
+    end
+
+    -- Step 2: Process fluid types in batches (max 6 per batch due to interface slot limit)
+    local maxFluidSlots = 6
+    for batchStart = 1, #fluidTypes, maxFluidSlots do
+      local batchEnd = math.min(batchStart + maxFluidSlots - 1, #fluidTypes)
+      local fluidBatch = {}
+      for i = batchStart, batchEnd do
+        table.insert(fluidBatch, fluidTypes[i])
+      end
+      
+      event.push("log_info", "Processing fluid batch "..math.ceil(batchStart / maxFluidSlots).." ("..#fluidBatch.." types)")
+      local success = self:processFluidBatch(fluidBatch)
+      if not success then
+        return false
+      end
+    end
+
+    -- Step 3: Configure all item slots at once (1 slot per type)
+    local outputItemSlots = {}   -- Map: slot -> type info
+    local mainItemSlots = {}     -- Map: slot -> type info
+    local nextItemSlot = 1
+    local maxItemSlots = 9
+    
+    -- Configure item slots
+    for _, itemType in ipairs(itemTypes) do
+      if nextItemSlot > maxItemSlots then
+        event.push("log_error", "Too many item types ("..#itemTypes.."), max "..maxItemSlots.." supported")
+        return false
+      end
+      
+      -- Configure output interface (configure with full amount, interface will stock up to slot limit)
+      if self:configureSingleItemSlot(self.outputMeInterfaceProxy, nextItemSlot, itemType.dbIndex, itemType.outputAmount) then
+        outputItemSlots[nextItemSlot] = itemType
+      else
+        event.push("log_error", "Failed to configure output item slot "..nextItemSlot.." for "..itemType.label)
+        -- Clean up
+        for slot, _ in pairs(outputItemSlots) do
+          self:clearSingleItemSlot(self.outputMeInterfaceProxy, slot)
+        end
+        return false
+      end
+      
+      -- Configure main interface (configure with full amount, interface will stock up to slot limit)
+      if self:configureSingleItemSlot(self.mainMeInterfaceProxy, nextItemSlot, itemType.dbIndex, itemType.mainAmount) then
+        mainItemSlots[nextItemSlot] = itemType
+      else
+        event.push("log_error", "Failed to configure main item slot "..nextItemSlot.." for "..itemType.label)
+        -- Clean up
+        for slot, _ in pairs(outputItemSlots) do
+          self:clearSingleItemSlot(self.outputMeInterfaceProxy, slot)
+        end
+        return false
+      end
+      
+      nextItemSlot = nextItemSlot + 1
+    end
+    
+    if #itemTypes > 0 then
+      event.push("log_info", "Configured "..#itemTypes.." item types")
+      
+      -- Wait for interfaces to stock
+      os.sleep(0.5)
+      
+      -- Transfer all items from output interface
+      for slot, itemType in pairs(outputItemSlots) do
+        event.push("log_info", "Transferring "..itemType.outputAmount.." of "..itemType.label.." from output interface")
+        local transferred = 0
+        local maxAttempts = 50
+        local attempt = 0
         
-        -- Configure multiple slots on output interface
-        event.push("log_info", "Configuring output interface for "..outputAmount.." of "..label.." (1 per dust requested)")
-        local outputSlots = self:configureMultipleItemSlots(self.outputMeInterfaceProxy, dbIndex, outputAmount)
-        if #outputSlots == 0 then
-          event.push("log_error", "Failed to configure any output interface slots for "..label)
-          return false
-        end
-
-        -- Configure multiple slots on main interface
-        event.push("log_info", "Configuring main interface for "..mainAmount.." of "..label.." (8 per dust requested)")
-        local mainSlots = self:configureMultipleItemSlots(self.mainMeInterfaceProxy, dbIndex, mainAmount)
-        if #mainSlots == 0 then
-          event.push("log_error", "Failed to configure any main interface slots for "..label)
-          -- Clear output interface config
-          self:clearMultipleItemSlots(self.outputMeInterfaceProxy, outputSlots)
-          return false
-        end
-
-        -- Wait for interfaces to stock
-        os.sleep(0.5)
-
-        -- Transfer from output interface: 1 per dust requested
-        event.push("log_info", "Transferring "..outputAmount.." of "..label.." from output interface to Plasma module")
-        local transferredOutput = 0
-        local maxAttemptsOutput = 50
-        local attemptOutput = 0
-
-        while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
-          attemptOutput = attemptOutput + 1
-          -- Transfer up to 64 items at once (max per slot)
-          local transferAmount = math.min(outputAmount - transferredOutput, 64)
+        while transferred < itemType.outputAmount and attempt < maxAttempts do
+          attempt = attempt + 1
+          local transferAmount = math.min(itemType.outputAmount - transferred, 64)
           local result = self.outputTransposerProxy.transferItem(
             self.outputTransposerOutputSide,
             self.outputTransposerPlasmaSide,
             transferAmount
           )
-
+          
           if result then
-            transferredOutput = transferredOutput + transferAmount
-            event.push("log_info", "Transferred "..transferAmount.." of "..label.." from output (total: "..transferredOutput..")")
+            transferred = transferred + transferAmount
           else
             os.sleep(0.1)
           end
         end
-
-        if transferredOutput < outputAmount then
-          event.push("log_warning", "Only transferred "..transferredOutput.." of "..label.." from output out of "..outputAmount.." requested")
+        
+        if transferred < itemType.outputAmount then
+          event.push("log_warning", "Only transferred "..transferred.." of "..itemType.label.." from output out of "..itemType.outputAmount.." requested")
         end
-
-        -- Transfer from main interface: 8 per dust requested
-        event.push("log_info", "Transferring "..mainAmount.." of "..label.." from main interface to Plasma module")
+      end
+      
+      -- Transfer all items from main interface
+      for slot, itemType in pairs(mainItemSlots) do
+        event.push("log_info", "Transferring "..itemType.mainAmount.." of "..itemType.label.." from main interface")
         local transferred = 0
         local maxAttempts = 200
         local attempt = 0
-
-        while transferred < mainAmount and attempt < maxAttempts do
+        
+        while transferred < itemType.mainAmount and attempt < maxAttempts do
           attempt = attempt + 1
-          -- Transfer up to 64 items at once (max per slot)
-          local transferAmount = math.min(mainAmount - transferred, 64)
+          local transferAmount = math.min(itemType.mainAmount - transferred, 64)
           local result = self.mainTransposerProxy.transferItem(
             self.mainTransposerMainSide,
             self.mainTransposerPlasmaSide,
             transferAmount
           )
-
+          
           if result then
             transferred = transferred + transferAmount
-            if attempt % 10 == 0 then -- Log every 10th attempt to reduce spam
-              event.push("log_info", "Transferred "..transferred.." of "..label.." from main (target: "..mainAmount..")")
+            if attempt % 20 == 0 then -- Log every 20th attempt to reduce spam
+              event.push("log_info", "Transferred "..transferred.." of "..itemType.label.." from main (target: "..itemType.mainAmount..")")
             end
           else
-            -- Wait a bit for interface to restock
             os.sleep(0.1)
           end
         end
-
-        if transferred < mainAmount then
-          event.push("log_warning", "Only transferred "..transferred.." of "..label.." from main out of "..mainAmount.." requested")
+        
+        if transferred < itemType.mainAmount then
+          event.push("log_warning", "Only transferred "..transferred.." of "..itemType.label.." from main out of "..itemType.mainAmount.." requested")
         end
-
-        -- Clear interface configurations
-        self:clearMultipleItemSlots(self.outputMeInterfaceProxy, outputSlots)
-        self:clearMultipleItemSlots(self.mainMeInterfaceProxy, mainSlots)
-        event.push("log_info", "Cleared interface configurations for "..label)
       end
+      
+      -- Clear all item interface configurations
+      for slot, _ in pairs(outputItemSlots) do
+        self:clearSingleItemSlot(self.outputMeInterfaceProxy, slot)
+      end
+      for slot, _ in pairs(mainItemSlots) do
+        self:clearSingleItemSlot(self.mainMeInterfaceProxy, slot)
+      end
+      
+      event.push("log_info", "Cleared all item interface configurations")
     end
-
+    
     -- Clear all database entries after transfer
     self.databaseEntries = {}
     return true
