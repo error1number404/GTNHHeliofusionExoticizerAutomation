@@ -318,33 +318,37 @@ function quarkGluonPlasmaController:new(
     end
   end
 
-  ---Configure multiple interface slots to stock fluid
+  ---Configure interface slot to stock fluid by type
+  ---Note: Fluids can only be configured by type, not by type and amount.
+  ---The interface will always try to pull everything from the network.
   ---@param interfaceProxy table
   ---@param dbIndex number
-  ---@param amount number
+  ---@param amount number (unused, kept for API compatibility)
   ---@return table<number> slots Configured slot numbers (1-6)
   ---@private
   function obj:configureMultipleFluidSlots(interfaceProxy, dbIndex, amount)
     local slots = {}
-    local remainingAmount = amount
     local maxSlots = 6 -- Max 6 slots available
-    local maxPerSlot = 16000 -- Each slot holds 16000L
     
+    -- Configure one slot per fluid type (fluids pull all available from network)
+    -- We can configure multiple slots for the same type to increase throughput
+    -- but we cannot control the amount per slot
     for slot = 1, maxSlots do
-      if remainingAmount <= 0 then
-        break
-      end
-      
-      -- Use as much as possible per slot (up to 16000L)
-      local slotAmount = math.min(remainingAmount, maxPerSlot)
-      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex, slotAmount)
+      -- Configure slot by type only (no amount parameter)
+      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex)
       if result then
         table.insert(slots, slot)
-        remainingAmount = remainingAmount - slotAmount
+        -- For fluids, one slot is typically sufficient as it will pull all available
+        -- But we can configure multiple slots if needed for throughput
+        break
       else
-        event.push("log_warning", "Failed to configure fluid slot "..slot..", continuing with "..#slots.." slots")
+        event.push("log_warning", "Failed to configure fluid slot "..slot)
         break
       end
+    end
+    
+    if #slots == 0 then
+      event.push("log_error", "Failed to configure any fluid slots")
     end
     
     return slots
