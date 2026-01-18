@@ -335,7 +335,7 @@ function quarkGluonPlasmaController:new(
   function obj:configureItemInterface(interfaceProxy, side, dbIndex, amount)
     -- Set interface configuration (assuming similar method exists for items)
     -- If the method name is different, we'll need to adjust
-    local result = interfaceProxy.setItemInterfaceConfiguration(side, self.database.address, dbIndex)
+    local result = interfaceProxy.setInterfaceConfiguration(side, self.database.address, dbIndex)
     if not result then
       return false
     end
