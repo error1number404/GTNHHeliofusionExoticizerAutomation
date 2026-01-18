@@ -1,23 +1,23 @@
 local shell = require("shell")
 local filesystem = require("filesystem")
 
-local repo = "https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/Magmatter/"
+local repo = "https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/"
 local branch = "master"
 
 local files = {
-  "main.lua",
-  "version.lua",
-  "src/magmatter-controller.lua",
-  "lib/component-discover-lib.lua",
-  "lib/gui-lib.lua",
-  "lib/list-lib.lua",
-  "lib/logger-lib.lua",
-  "lib/program-lib.lua",
-  "lib/state-machine-lib.lua",
-  "lib/gui-widgets/scroll-list.lua",
-  "lib/logger-handler/discord-logger-handler-lib.lua",
-  "lib/logger-handler/file-logger-handler-lib.lua",
-  "lib/logger-handler/scroll-list-logger-handler-lib.lua",
+  "Magmatter/main.lua",
+  "Magmatter/version.lua",
+  "Magmatter/src/magmatter-controller.lua",
+  "Magmatter/lib/component-discover-lib.lua",
+  "Magmatter/lib/gui-lib.lua",
+  "Magmatter/lib/list-lib.lua",
+  "Magmatter/lib/logger-lib.lua",
+  "Magmatter/lib/program-lib.lua",
+  "Magmatter/lib/state-machine-lib.lua",
+  "Magmatter/lib/gui-widgets/scroll-list.lua",
+  "Magmatter/lib/logger-handler/discord-logger-handler-lib.lua",
+  "Magmatter/lib/logger-handler/file-logger-handler-lib.lua",
+  "Magmatter/lib/logger-handler/scroll-list-logger-handler-lib.lua",
 }
 
 local dirs = {"src", "lib", "lib/gui-widgets", "lib/logger-handler"}
