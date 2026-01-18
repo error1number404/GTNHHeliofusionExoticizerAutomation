@@ -305,61 +305,86 @@ function quarkGluonPlasmaController:new(
     end
   end
 
-  ---Configure interface to stock fluid
+  ---Configure multiple interface slots to stock fluid
   ---@param interfaceProxy table
-  ---@param side number
   ---@param dbIndex number
   ---@param amount number
-  ---@return boolean
+  ---@return table<number> slots Configured slot numbers (1-6)
   ---@private
-  function obj:configureFluidInterface(interfaceProxy, side, dbIndex, amount)
-    -- Set interface configuration
-    local result = interfaceProxy.setFluidInterfaceConfiguration(side, self.database.address, dbIndex)
-    if not result then
-      return false
+  function obj:configureMultipleFluidSlots(interfaceProxy, dbIndex, amount)
+    local slots = {}
+    local slotsNeeded = math.ceil(amount / 16000) -- Each slot holds 16000L
+    slotsNeeded = math.min(slotsNeeded, 6) -- Max 6 slots available
+    
+    for slot = 1, slotsNeeded do
+      local result = interfaceProxy.setFluidInterfaceConfiguration(slot - 1, self.database.address, dbIndex)
+      if result then
+        table.insert(slots, slot)
+      else
+        event.push("log_warning", "Failed to configure fluid slot "..slot..", continuing with "..#slots.." slots")
+        break
+      end
     end
-
-    -- Set the amount (if there's a method for it, otherwise the interface will stock up to slot limit)
-    -- Note: Interface slots can hold up to 16000L, so we configure it and let it stock
-    -- The actual amount transferred will be controlled by transposer
-    return true
+    
+    return slots
   end
 
-  ---Configure interface to stock item
+  ---Configure multiple interface slots to stock item
   ---@param interfaceProxy table
-  ---@param side number
   ---@param dbIndex number
   ---@param amount number
-  ---@return boolean
+  ---@return table<number> slots Configured slot numbers (1-6)
   ---@private
-  function obj:configureItemInterface(interfaceProxy, side, dbIndex, amount)
-    -- Convert side value (0-5) to slot number (1-9)
-    -- In AE2, slots 1-6 correspond to sides: bottom(0), top(1), north(2), south(3), west(4), east(5)
-    local slot_number = side + 1
-    -- Set interface configuration using slot number
-    local result = interfaceProxy.setInterfaceConfiguration(slot_number, self.database.address, dbIndex)
-    if not result then
-      return false
+  function obj:configureMultipleItemSlots(interfaceProxy, dbIndex, amount)
+    local slots = {}
+    local slotsNeeded = math.ceil(amount / 64) -- Each slot holds 64 items
+    slotsNeeded = math.min(slotsNeeded, 6) -- Max 6 slots available
+    
+    for slot = 1, slotsNeeded do
+      local result = interfaceProxy.setInterfaceConfiguration(slot, self.database.address, dbIndex)
+      if result then
+        table.insert(slots, slot)
+      else
+        event.push("log_warning", "Failed to configure item slot "..slot..", continuing with "..#slots.." slots")
+        break
+      end
     end
-
-    -- Set the amount (if there's a method for it)
-    -- Note: Interface slots can hold up to 64 items
-    return true
+    
+    return slots
   end
 
-  ---Clear interface configuration
+  ---Clear multiple interface slot configurations for items
   ---@param interfaceProxy table
-  ---@param side number The side value (0-5) which will be converted to slot number (1-9)
-  ---@param isLiquid boolean (unused, kept for compatibility)
+  ---@param slots table<number> Slot numbers to clear (1-6)
   ---@return boolean
   ---@private
-  function obj:clearInterfaceConfiguration(interfaceProxy, side, isLiquid)
-    -- Convert side value (0-5) to slot number (1-9)
-    -- In AE2, slots 1-6 correspond to sides: bottom(0), top(1), north(2), south(3), west(4), east(5)
-    local slot_number = side + 1
-    -- Call setInterfaceConfiguration with only the slot number to clear the configuration
-    local success = interfaceProxy.setInterfaceConfiguration(slot_number)
-    return success or false
+  function obj:clearMultipleItemSlots(interfaceProxy, slots)
+    local allSuccess = true
+    for _, slot in ipairs(slots) do
+      local success = interfaceProxy.setInterfaceConfiguration(slot)
+      if not success then
+        allSuccess = false
+      end
+    end
+    return allSuccess
+  end
+
+  ---Clear multiple interface slot configurations for fluids
+  ---@param interfaceProxy table
+  ---@param slots table<number> Slot numbers to clear (1-6, but stored as 1-6, need to convert to side 0-5)
+  ---@return boolean
+  ---@private
+  function obj:clearMultipleFluidSlots(interfaceProxy, slots)
+    local allSuccess = true
+    for _, slot in ipairs(slots) do
+      local side = slot - 1 -- Convert slot (1-6) to side (0-5)
+      -- Clear by setting configuration to nil/empty
+      local success = interfaceProxy.setFluidInterfaceConfiguration(side)
+      if not success then
+        allSuccess = false
+      end
+    end
+    return allSuccess
   end
 
   ---Transfer dusts and liquids to Plasma module using transposer with interface configuration
@@ -384,19 +409,21 @@ function quarkGluonPlasmaController:new(
         local outputAmount = output.count * 1  -- 1L per L requested
         local mainAmount = output.count * 999   -- 999L per L requested
         
-        -- Configure output interface: 1L per L from output net
+        -- Configure multiple slots on output interface
         event.push("log_info", "Configuring output interface for "..outputAmount.."L of "..label.." (1L per L requested)")
-        if not self:configureFluidInterface(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, dbIndex, outputAmount) then
-          event.push("log_error", "Failed to configure output interface for "..label)
+        local outputSlots = self:configureMultipleFluidSlots(self.outputMeInterfaceProxy, dbIndex, outputAmount)
+        if #outputSlots == 0 then
+          event.push("log_error", "Failed to configure any output interface slots for "..label)
           return false
         end
 
-        -- Configure main interface: 999L per L from main net
+        -- Configure multiple slots on main interface
         event.push("log_info", "Configuring main interface for "..mainAmount.."L of "..label.." (999L per L requested)")
-        if not self:configureFluidInterface(self.mainMeInterfaceProxy, self.mainTransposerMainSide, dbIndex, mainAmount) then
-          event.push("log_error", "Failed to configure main interface for "..label)
+        local mainSlots = self:configureMultipleFluidSlots(self.mainMeInterfaceProxy, dbIndex, mainAmount)
+        if #mainSlots == 0 then
+          event.push("log_error", "Failed to configure any main interface slots for "..label)
           -- Clear output interface config
-          self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, true)
+          self:clearMultipleFluidSlots(self.outputMeInterfaceProxy, outputSlots)
           return false
         end
 
@@ -406,12 +433,13 @@ function quarkGluonPlasmaController:new(
         -- Transfer from output interface: 1L per L requested
         event.push("log_info", "Transferring "..outputAmount.."L of "..label.." from output interface to Plasma module")
         local transferredOutput = 0
-        local maxAttemptsOutput = 20
+        local maxAttemptsOutput = 50
         local attemptOutput = 0
 
         while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
           attemptOutput = attemptOutput + 1
-          local transferAmount = math.min(outputAmount - transferredOutput, 1000)
+          -- Transfer up to 16000L at once (max per slot)
+          local transferAmount = math.min(outputAmount - transferredOutput, 16000)
           local result = self.outputTransposerProxy.transferFluid(
             self.outputTransposerOutputSide,
             self.outputTransposerPlasmaSide,
@@ -422,7 +450,7 @@ function quarkGluonPlasmaController:new(
             transferredOutput = transferredOutput + transferAmount
             event.push("log_info", "Transferred "..transferAmount.."L of "..label.." from output (total: "..transferredOutput.."L)")
           else
-            os.sleep(0.2)
+            os.sleep(0.1)
           end
         end
 
@@ -430,15 +458,16 @@ function quarkGluonPlasmaController:new(
           event.push("log_warning", "Only transferred "..transferredOutput.."L of "..label.." from output out of "..outputAmount.."L requested")
         end
 
-        -- Transfer from main interface: 999L per L requested (in chunks)
+        -- Transfer from main interface: 999L per L requested
         event.push("log_info", "Transferring "..mainAmount.."L of "..label.." from main interface to Plasma module")
         local transferred = 0
-        local maxAttempts = 100
+        local maxAttempts = 200
         local attempt = 0
 
         while transferred < mainAmount and attempt < maxAttempts do
           attempt = attempt + 1
-          local transferAmount = math.min(mainAmount - transferred, 1000)
+          -- Transfer up to 16000L at once (max per slot)
+          local transferAmount = math.min(mainAmount - transferred, 16000)
           local result = self.mainTransposerProxy.transferFluid(
             self.mainTransposerMainSide,
             self.mainTransposerPlasmaSide,
@@ -447,10 +476,12 @@ function quarkGluonPlasmaController:new(
 
           if result then
             transferred = transferred + transferAmount
-            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." from main (total: "..transferred.."L)")
+            if attempt % 10 == 0 then -- Log every 10th attempt to reduce spam
+              event.push("log_info", "Transferred "..transferred.."L of "..label.." from main (target: "..mainAmount.."L)")
+            end
           else
             -- Wait a bit for interface to restock
-            os.sleep(0.2)
+            os.sleep(0.1)
           end
         end
 
@@ -459,8 +490,8 @@ function quarkGluonPlasmaController:new(
         end
 
         -- Clear interface configurations
-        self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, true)
-        self:clearInterfaceConfiguration(self.mainMeInterfaceProxy, self.mainTransposerMainSide, true)
+        self:clearMultipleFluidSlots(self.outputMeInterfaceProxy, outputSlots)
+        self:clearMultipleFluidSlots(self.mainMeInterfaceProxy, mainSlots)
         event.push("log_info", "Cleared interface configurations for "..label)
 
       else
@@ -468,19 +499,21 @@ function quarkGluonPlasmaController:new(
         local outputAmount = output.count * 1  -- 1 per dust requested
         local mainAmount = output.count * 8     -- 8 per dust requested
         
-        -- Configure output interface: 1 per dust from output net
+        -- Configure multiple slots on output interface
         event.push("log_info", "Configuring output interface for "..outputAmount.." of "..label.." (1 per dust requested)")
-        if not self:configureItemInterface(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, dbIndex, outputAmount) then
-          event.push("log_error", "Failed to configure output interface for "..label)
+        local outputSlots = self:configureMultipleItemSlots(self.outputMeInterfaceProxy, dbIndex, outputAmount)
+        if #outputSlots == 0 then
+          event.push("log_error", "Failed to configure any output interface slots for "..label)
           return false
         end
 
-        -- Configure main interface: 8 per dust from main net
+        -- Configure multiple slots on main interface
         event.push("log_info", "Configuring main interface for "..mainAmount.." of "..label.." (8 per dust requested)")
-        if not self:configureItemInterface(self.mainMeInterfaceProxy, self.mainTransposerMainSide, dbIndex, mainAmount) then
-          event.push("log_error", "Failed to configure main interface for "..label)
+        local mainSlots = self:configureMultipleItemSlots(self.mainMeInterfaceProxy, dbIndex, mainAmount)
+        if #mainSlots == 0 then
+          event.push("log_error", "Failed to configure any main interface slots for "..label)
           -- Clear output interface config
-          self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, false)
+          self:clearMultipleItemSlots(self.outputMeInterfaceProxy, outputSlots)
           return false
         end
 
@@ -490,11 +523,12 @@ function quarkGluonPlasmaController:new(
         -- Transfer from output interface: 1 per dust requested
         event.push("log_info", "Transferring "..outputAmount.." of "..label.." from output interface to Plasma module")
         local transferredOutput = 0
-        local maxAttemptsOutput = 20
+        local maxAttemptsOutput = 50
         local attemptOutput = 0
 
         while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
           attemptOutput = attemptOutput + 1
+          -- Transfer up to 64 items at once (max per slot)
           local transferAmount = math.min(outputAmount - transferredOutput, 64)
           local result = self.outputTransposerProxy.transferItem(
             self.outputTransposerOutputSide,
@@ -506,7 +540,7 @@ function quarkGluonPlasmaController:new(
             transferredOutput = transferredOutput + transferAmount
             event.push("log_info", "Transferred "..transferAmount.." of "..label.." from output (total: "..transferredOutput..")")
           else
-            os.sleep(0.2)
+            os.sleep(0.1)
           end
         end
 
@@ -517,11 +551,12 @@ function quarkGluonPlasmaController:new(
         -- Transfer from main interface: 8 per dust requested
         event.push("log_info", "Transferring "..mainAmount.." of "..label.." from main interface to Plasma module")
         local transferred = 0
-        local maxAttempts = 50
+        local maxAttempts = 200
         local attempt = 0
 
         while transferred < mainAmount and attempt < maxAttempts do
           attempt = attempt + 1
+          -- Transfer up to 64 items at once (max per slot)
           local transferAmount = math.min(mainAmount - transferred, 64)
           local result = self.mainTransposerProxy.transferItem(
             self.mainTransposerMainSide,
@@ -531,10 +566,12 @@ function quarkGluonPlasmaController:new(
 
           if result then
             transferred = transferred + transferAmount
-            event.push("log_info", "Transferred "..transferAmount.." of "..label.." from main (total: "..transferred..")")
+            if attempt % 10 == 0 then -- Log every 10th attempt to reduce spam
+              event.push("log_info", "Transferred "..transferred.." of "..label.." from main (target: "..mainAmount..")")
+            end
           else
             -- Wait a bit for interface to restock
-            os.sleep(0.2)
+            os.sleep(0.1)
           end
         end
 
@@ -543,8 +580,8 @@ function quarkGluonPlasmaController:new(
         end
 
         -- Clear interface configurations
-        self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, false)
-        self:clearInterfaceConfiguration(self.mainMeInterfaceProxy, self.mainTransposerMainSide, false)
+        self:clearMultipleItemSlots(self.outputMeInterfaceProxy, outputSlots)
+        self:clearMultipleItemSlots(self.mainMeInterfaceProxy, mainSlots)
         event.push("log_info", "Cleared interface configurations for "..label)
       end
     end
