@@ -1,7 +1,7 @@
 local shell = require("shell")
 local filesystem = require("filesystem")
 
-local repo = "https://raw.githubusercontent.com/error1number404/GTNHQuarkGluonPlasmaAutomation/"
+local repo = "https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/"
 local branch = "master"
 
 local files = {

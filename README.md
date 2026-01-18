@@ -14,7 +14,7 @@ Each project includes an automated installer script. To install a program:
 1. **Navigate to the project directory** on your OpenComputers computer
 2. **Download the installer**:
    ```lua
-   wget https://raw.githubusercontent.com/error1number404/GTNHQuarkGluonPlasmaAutomation/master/[ProjectName]/installer.lua && installer
+   wget https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/master/[ProjectName]/installer.lua && installer
    ```
    Replace `[ProjectName]` with either `QuarkGluonPlasma` or `Magmatter`
 
@@ -33,14 +33,12 @@ The installer will:
 
 **For QuarkGluonPlasma:**
 ```lua
-wget https://raw.githubusercontent.com/error1number404/GTNHQuarkGluonPlasmaAutomation/master/QuarkGluonPlasma/installer.lua && installer
-installer
+wget https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/master/QuarkGluonPlasma/installer.lua && installer
 ```
 
 **For Magmatter:**
 ```lua
-wget https://raw.githubusercontent.com/error1number404/GTNHQuarkGluonPlasmaAutomation/master/Magmatter/installer.lua && installer
-installer
+wget https://raw.githubusercontent.com/error1number404/GTNHHeliofusionExoticizerAutomation/master/Magmatter/installer.lua && installer
 ```
 
 ## Configuration
