@@ -194,54 +194,67 @@ function quarkGluonPlasmaController:new(
     local outputs = {}
     local count = 0
 
+    -- Process items (dusts) - up to 7 types
     for _, value in pairs(items) do
+      -- Extract base label from dust names
       local label = value.label:match("Pile of%s(.+)%sDust")
-      local coefficient = 1
+      local dustCount = value.size
 
       if label == nil then
         label = value.label:match("(.+) Dust")
-        coefficient = 9
+        -- "X Dust" means 9 ingots worth, so we need to count each dust as 1
+        dustCount = value.size
       end
 
       if label == nil then
-        outputs[value.label] = {
-          label = value.label,
-          count = value.size * coefficient,
-          isLiquid = false,
-          originalLabel = value.label
-        }
-      else
-        outputs[label] = {
-          label = label,
-          count = value.size * coefficient,
-          isLiquid = false,
-          originalLabel = value.label
-        }
+        -- Not a recognized dust pattern, use as-is
+        label = value.label
+        dustCount = value.size
       end
+
+      -- Use the normalized label as key
+      outputs[label] = {
+        label = label,
+        count = dustCount,  -- Actual count from module output
+        isLiquid = false,
+        originalLabel = value.label
+      }
 
       count = count + 1
     end
 
+    -- Process liquids - up to 7 types total (items + liquids)
     for _, value in pairs(liquids) do
+      -- Remove " Gas" suffix if present
       local label = value.label:match("^(.-)%s?[Gg]?[Aa]?[Ss]?$")
 
       if label == nil then
-        outputs[value.label] = {
-          label = value.label,
-          count = value.amount,
-          isLiquid = true,
-          originalLabel = value.label
-        }
-      else
-        outputs[label] = {
-          label = label,
-          count = value.amount,
-          isLiquid = true,
-          originalLabel = value.label
-        }
+        label = value.label
       end
 
+      -- Use the normalized label as key
+      outputs[label] = {
+        label = label,
+        count = value.amount,  -- Actual amount in liters from module output
+        isLiquid = true,
+        originalLabel = value.label
+      }
+
       count = count + 1
+    end
+
+    -- Limit to 7 types as per puzzle requirements
+    if count > 7 then
+      event.push("log_warning", "More than 7 types detected ("..count.."), processing first 7")
+      local limitedOutputs = {}
+      local limitedCount = 0
+      for label, output in pairs(outputs) do
+        if limitedCount < 7 then
+          limitedOutputs[label] = output
+          limitedCount = limitedCount + 1
+        end
+      end
+      return limitedOutputs, limitedCount
     end
 
     return outputs, count
