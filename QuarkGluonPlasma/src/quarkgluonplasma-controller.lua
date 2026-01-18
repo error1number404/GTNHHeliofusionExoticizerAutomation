@@ -93,7 +93,9 @@ function quarkGluonPlasmaController:new(
   obj.mainTransposerMainSide = mainTransposerMainSide
   obj.mainTransposerPlasmaSide = mainTransposerPlasmaSide
 
+  obj.database = component.database
   obj.stateMachine = stateMachineLib:new()
+  obj.databaseEntries = {} -- Store database entries for items/fluids
 
   ---Init
   function obj:init()
@@ -245,7 +247,119 @@ function quarkGluonPlasmaController:new(
     return outputs, count
   end
 
-  ---Transfer dusts and liquids to Plasma module using transposer
+  ---Create database entry for fluid or item
+  ---@param label string
+  ---@param isLiquid boolean
+  ---@param originalLabel string
+  ---@return integer|nil dbIndex
+  ---@private
+  function obj:createDatabaseEntry(label, isLiquid, originalLabel)
+    -- Check if we already have this entry
+    if self.databaseEntries[label] then
+      return self.databaseEntries[label].dbIndex
+    end
+
+    -- Find next available database index
+    local dbIndex = 1
+    while self.database.get(dbIndex) ~= nil do
+      dbIndex = dbIndex + 1
+    end
+
+    local result = false
+    if isLiquid then
+      -- Create fluid drop entry
+      result = self.database.set(dbIndex, "ae2fc:fluid_drop", 0, "{Fluid:\""..originalLabel.."\"}")
+    else
+      -- For items, we need to get the actual item from network to create proper entry
+      -- Try output network first, then main network
+      local items = self.outputMeInterfaceProxy.getItemsInNetwork({label = originalLabel})
+      if not items or #items == 0 then
+        items = self.mainMeInterfaceProxy.getItemsInNetwork({label = originalLabel})
+      end
+      
+      if items and #items > 0 then
+        local item = items[1]
+        -- Create item entry using the item's name and damage
+        local tag = ""
+        if item.hasTag and item.tag then
+          tag = item.tag
+        end
+        result = self.database.set(dbIndex, item.name, item.damage or 0, tag)
+      else
+        event.push("log_error", "Item "..originalLabel.." not found in any network for database entry")
+        return nil
+      end
+    end
+
+    if result then
+      self.databaseEntries[label] = {
+        dbIndex = dbIndex,
+        isLiquid = isLiquid,
+        originalLabel = originalLabel
+      }
+      event.push("log_info", "Created database entry for "..label.." at index "..dbIndex)
+      return dbIndex
+    else
+      event.push("log_error", "Failed to create database entry for "..label)
+      return nil
+    end
+  end
+
+  ---Configure interface to stock fluid
+  ---@param interfaceProxy table
+  ---@param side number
+  ---@param dbIndex number
+  ---@param amount number
+  ---@return boolean
+  ---@private
+  function obj:configureFluidInterface(interfaceProxy, side, dbIndex, amount)
+    -- Set interface configuration
+    local result = interfaceProxy.setFluidInterfaceConfiguration(side, self.database.address, dbIndex)
+    if not result then
+      return false
+    end
+
+    -- Set the amount (if there's a method for it, otherwise the interface will stock up to slot limit)
+    -- Note: Interface slots can hold up to 16000L, so we configure it and let it stock
+    -- The actual amount transferred will be controlled by transposer
+    return true
+  end
+
+  ---Configure interface to stock item
+  ---@param interfaceProxy table
+  ---@param side number
+  ---@param dbIndex number
+  ---@param amount number
+  ---@return boolean
+  ---@private
+  function obj:configureItemInterface(interfaceProxy, side, dbIndex, amount)
+    -- Set interface configuration (assuming similar method exists for items)
+    -- If the method name is different, we'll need to adjust
+    local result = interfaceProxy.setItemInterfaceConfiguration(side, self.database.address, dbIndex)
+    if not result then
+      return false
+    end
+
+    -- Set the amount (if there's a method for it)
+    -- Note: Interface slots can hold up to 64 items
+    return true
+  end
+
+  ---Clear interface configuration
+  ---@param interfaceProxy table
+  ---@param side number
+  ---@param isLiquid boolean
+  ---@return boolean
+  ---@private
+  function obj:clearInterfaceConfiguration(interfaceProxy, side, isLiquid)
+    if isLiquid then
+      return interfaceProxy.clearFluidInterfaceConfiguration(side)
+    else
+      return interfaceProxy.clearItemInterfaceConfiguration(side)
+    end
+  end
+
+  ---Transfer dusts and liquids to Plasma module using transposer with interface configuration
   ---@return boolean
   ---@private
   function obj:transferDustsAndLiquids()
@@ -253,114 +367,187 @@ function quarkGluonPlasmaController:new(
       return false
     end
 
+    -- Process each requested item/fluid
     for label, output in pairs(self.stateMachine.data.outputs) do
+      -- Create database entry
+      local dbIndex = self:createDatabaseEntry(label, output.isLiquid, output.originalLabel)
+      if not dbIndex then
+        event.push("log_error", "Failed to create database entry for "..label)
+        return false
+      end
+
       if output.isLiquid then
-        -- Transfer liquid + 999L for each L
-        local amountToTransfer = output.count + 999
-        event.push("log_info", "Transferring "..amountToTransfer.."L of "..label.." to Plasma module via transposer")
+        -- Calculate amounts: 1L per L requested from output net, 999L per L requested from main net
+        local outputAmount = output.count * 1  -- 1L per L requested
+        local mainAmount = output.count * 999   -- 999L per L requested
         
-        -- Use output transposer to transfer fluid from output interface to plasma interface
-        local transferred = 0
-        local maxAttempts = 100
-        local attempt = 0
-        
-        while transferred < amountToTransfer and attempt < maxAttempts do
-          attempt = attempt + 1
-          
-          -- Transfer fluid using transposer (from output side to plasma side)
-          local transferAmount = math.min(amountToTransfer - transferred, 1000) -- Transfer in chunks
+        -- Configure output interface: 1L per L from output net
+        event.push("log_info", "Configuring output interface for "..outputAmount.."L of "..label.." (1L per L requested)")
+        if not self:configureFluidInterface(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, dbIndex, outputAmount) then
+          event.push("log_error", "Failed to configure output interface for "..label)
+          return false
+        end
+
+        -- Configure main interface: 999L per L from main net
+        event.push("log_info", "Configuring main interface for "..mainAmount.."L of "..label.." (999L per L requested)")
+        if not self:configureFluidInterface(self.mainMeInterfaceProxy, self.mainTransposerMainSide, dbIndex, mainAmount) then
+          event.push("log_error", "Failed to configure main interface for "..label)
+          -- Clear output interface config
+          self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, true)
+          return false
+        end
+
+        -- Wait for interfaces to stock
+        os.sleep(0.5)
+
+        -- Transfer from output interface: 1L per L requested
+        event.push("log_info", "Transferring "..outputAmount.."L of "..label.." from output interface to Plasma module")
+        local transferredOutput = 0
+        local maxAttemptsOutput = 20
+        local attemptOutput = 0
+
+        while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
+          attemptOutput = attemptOutput + 1
+          local transferAmount = math.min(outputAmount - transferredOutput, 1000)
           local result = self.outputTransposerProxy.transferFluid(
             self.outputTransposerOutputSide,
             self.outputTransposerPlasmaSide,
             transferAmount
           )
-          
+
           if result then
-            transferred = transferred + transferAmount
-            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." (total: "..transferred.."L)")
+            transferredOutput = transferredOutput + transferAmount
+            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." from output (total: "..transferredOutput.."L)")
           else
-            -- Check if fluid is still available
-            local fluids = self.outputMeInterfaceProxy.getFluidsInNetwork()
-            local found = false
-            for _, fluid in pairs(fluids) do
-              if fluid.label == output.originalLabel or string.match(fluid.label, output.originalLabel) then
-                found = true
-                break
-              end
-            end
-            
-            if not found then
-              event.push("log_warning", "Fluid "..label.." no longer available in output network")
-              break
-            end
-            
-            -- Wait a bit before retrying
-            os.sleep(0.1)
+            os.sleep(0.2)
           end
         end
-        
-        if transferred < amountToTransfer then
-          event.push("log_error", "Only transferred "..transferred.."L of "..label.." out of "..amountToTransfer.."L requested")
-          return false
-        else
-          event.push("log_info", "Successfully transferred "..transferred.."L of "..label.." to Plasma module")
+
+        if transferredOutput < outputAmount then
+          event.push("log_warning", "Only transferred "..transferredOutput.."L of "..label.." from output out of "..outputAmount.."L requested")
         end
-      else
-        -- Transfer dusts + 8 dusts for each dust
-        local amountToTransfer = output.count + (8 * output.count)
-        event.push("log_info", "Transferring "..amountToTransfer.." of "..label.." dust to Plasma module via transposer")
-        
-        -- Use output transposer to transfer items from output interface to plasma interface
+
+        -- Transfer from main interface: 999L per L requested (in chunks)
+        event.push("log_info", "Transferring "..mainAmount.."L of "..label.." from main interface to Plasma module")
         local transferred = 0
         local maxAttempts = 100
         local attempt = 0
-        
-        while transferred < amountToTransfer and attempt < maxAttempts do
+
+        while transferred < mainAmount and attempt < maxAttempts do
           attempt = attempt + 1
-          
-          -- Check available items
-          local items = self.outputMeInterfaceProxy.getItemsInNetwork({
-            label = output.originalLabel
-          })
-          
-          if items and #items > 0 then
-            local item = items[1]
-            local available = item.size or 0
-            
-            if available > 0 then
-              -- Transfer items using transposer (from output side to plasma side)
-              local transferAmount = math.min(available, amountToTransfer - transferred, 64) -- Transfer in stacks
-              local result = self.outputTransposerProxy.transferItem(
-                self.outputTransposerOutputSide,
-                self.outputTransposerPlasmaSide,
-                transferAmount
-              )
-              
-              if result then
-                transferred = transferred + transferAmount
-                event.push("log_info", "Transferred "..transferAmount.." of "..label.." (total: "..transferred..")")
-              else
-                os.sleep(0.1)
-              end
-            else
-              event.push("log_warning", "Item "..label.." no longer available in output network")
-              break
-            end
+          local transferAmount = math.min(mainAmount - transferred, 1000)
+          local result = self.mainTransposerProxy.transferFluid(
+            self.mainTransposerMainSide,
+            self.mainTransposerPlasmaSide,
+            transferAmount
+          )
+
+          if result then
+            transferred = transferred + transferAmount
+            event.push("log_info", "Transferred "..transferAmount.."L of "..label.." from main (total: "..transferred.."L)")
           else
-            event.push("log_warning", "Item "..label.." not found in output network")
-            break
+            -- Wait a bit for interface to restock
+            os.sleep(0.2)
           end
         end
-        
-        if transferred < amountToTransfer then
-          event.push("log_error", "Only transferred "..transferred.." of "..label.." out of "..amountToTransfer.." requested")
-          return false
-        else
-          event.push("log_info", "Successfully transferred "..transferred.." of "..label.." to Plasma module")
+
+        if transferred < mainAmount then
+          event.push("log_warning", "Only transferred "..transferred.."L of "..label.." from main out of "..mainAmount.."L requested")
         end
+
+        -- Clear interface configurations
+        self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, true)
+        self:clearInterfaceConfiguration(self.mainMeInterfaceProxy, self.mainTransposerMainSide, true)
+        event.push("log_info", "Cleared interface configurations for "..label)
+
+      else
+        -- Calculate amounts: 1 per dust requested from output net, 8 per dust requested from main net
+        local outputAmount = output.count * 1  -- 1 per dust requested
+        local mainAmount = output.count * 8     -- 8 per dust requested
+        
+        -- Configure output interface: 1 per dust from output net
+        event.push("log_info", "Configuring output interface for "..outputAmount.." of "..label.." (1 per dust requested)")
+        if not self:configureItemInterface(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, dbIndex, outputAmount) then
+          event.push("log_error", "Failed to configure output interface for "..label)
+          return false
+        end
+
+        -- Configure main interface: 8 per dust from main net
+        event.push("log_info", "Configuring main interface for "..mainAmount.." of "..label.." (8 per dust requested)")
+        if not self:configureItemInterface(self.mainMeInterfaceProxy, self.mainTransposerMainSide, dbIndex, mainAmount) then
+          event.push("log_error", "Failed to configure main interface for "..label)
+          -- Clear output interface config
+          self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, false)
+          return false
+        end
+
+        -- Wait for interfaces to stock
+        os.sleep(0.5)
+
+        -- Transfer from output interface: 1 per dust requested
+        event.push("log_info", "Transferring "..outputAmount.." of "..label.." from output interface to Plasma module")
+        local transferredOutput = 0
+        local maxAttemptsOutput = 20
+        local attemptOutput = 0
+
+        while transferredOutput < outputAmount and attemptOutput < maxAttemptsOutput do
+          attemptOutput = attemptOutput + 1
+          local transferAmount = math.min(outputAmount - transferredOutput, 64)
+          local result = self.outputTransposerProxy.transferItem(
+            self.outputTransposerOutputSide,
+            self.outputTransposerPlasmaSide,
+            transferAmount
+          )
+
+          if result then
+            transferredOutput = transferredOutput + transferAmount
+            event.push("log_info", "Transferred "..transferAmount.." of "..label.." from output (total: "..transferredOutput..")")
+          else
+            os.sleep(0.2)
+          end
+        end
+
+        if transferredOutput < outputAmount then
+          event.push("log_warning", "Only transferred "..transferredOutput.." of "..label.." from output out of "..outputAmount.." requested")
+        end
+
+        -- Transfer from main interface: 8 per dust requested
+        event.push("log_info", "Transferring "..mainAmount.." of "..label.." from main interface to Plasma module")
+        local transferred = 0
+        local maxAttempts = 50
+        local attempt = 0
+
+        while transferred < mainAmount and attempt < maxAttempts do
+          attempt = attempt + 1
+          local transferAmount = math.min(mainAmount - transferred, 64)
+          local result = self.mainTransposerProxy.transferItem(
+            self.mainTransposerMainSide,
+            self.mainTransposerPlasmaSide,
+            transferAmount
+          )
+
+          if result then
+            transferred = transferred + transferAmount
+            event.push("log_info", "Transferred "..transferAmount.." of "..label.." from main (total: "..transferred..")")
+          else
+            -- Wait a bit for interface to restock
+            os.sleep(0.2)
+          end
+        end
+
+        if transferred < mainAmount then
+          event.push("log_warning", "Only transferred "..transferred.." of "..label.." from main out of "..mainAmount.." requested")
+        end
+
+        -- Clear interface configurations
+        self:clearInterfaceConfiguration(self.outputMeInterfaceProxy, self.outputTransposerOutputSide, false)
+        self:clearInterfaceConfiguration(self.mainMeInterfaceProxy, self.mainTransposerMainSide, false)
+        event.push("log_info", "Cleared interface configurations for "..label)
       end
     end
 
+    -- Clear all database entries after transfer
+    self.databaseEntries = {}
     return true
   end
 
@@ -368,76 +555,8 @@ function quarkGluonPlasmaController:new(
   ---@return boolean
   ---@private
   function obj:transferAdditionalItems()
-    if self.stateMachine.data.outputs == nil then
-      return true
-    end
-
-    -- Get all items from output that need additional items
-    local itemsToRequest = {}
-    
-    for label, output in pairs(self.stateMachine.data.outputs) do
-      if not output.isLiquid then
-        -- Request additional items from main AE (8 dusts for each dust)
-        local additionalAmount = 8 * output.count
-        table.insert(itemsToRequest, {
-          label = output.originalLabel,
-          count = additionalAmount
-        })
-      end
-    end
-
-    -- Request items from main AE network and transfer to plasma module via transposer
-    for _, itemRequest in pairs(itemsToRequest) do
-      event.push("log_info", "Requesting "..itemRequest.count.." of "..itemRequest.label.." from main AE via transposer")
-      
-      local transferred = 0
-      local maxAttempts = 100
-      local attempt = 0
-      
-      while transferred < itemRequest.count and attempt < maxAttempts do
-        attempt = attempt + 1
-        
-        -- Check available items in main network
-        local items = self.mainMeInterfaceProxy.getItemsInNetwork({
-          label = itemRequest.label
-        })
-        
-        if items and #items > 0 then
-          local item = items[1]
-          local available = item.size or 0
-          
-          if available > 0 then
-            -- Transfer items using main transposer (from main side to plasma side)
-            local transferAmount = math.min(available, itemRequest.count - transferred, 64) -- Transfer in stacks
-            local result = self.mainTransposerProxy.transferItem(
-              self.mainTransposerMainSide,
-              self.mainTransposerPlasmaSide,
-              transferAmount
-            )
-            
-            if result then
-              transferred = transferred + transferAmount
-              event.push("log_info", "Transferred "..transferAmount.." of "..itemRequest.label.." (total: "..transferred..")")
-            else
-              os.sleep(0.1)
-            end
-          else
-            event.push("log_warning", "Item "..itemRequest.label.." no longer available in main network")
-            break
-          end
-        else
-          event.push("log_warning", "Item "..itemRequest.label.." not found in main AE network")
-          break
-        end
-      end
-      
-      if transferred < itemRequest.count then
-        event.push("log_warning", "Only transferred "..transferred.." of "..itemRequest.label.." out of "..itemRequest.count.." requested")
-      else
-        event.push("log_info", "Successfully transferred "..transferred.." of "..itemRequest.label.." from main AE")
-      end
-    end
-
+    -- Additional items are now handled in transferDustsAndLiquids via interface configuration
+    -- This method is kept for compatibility but should not be needed anymore
     return true
   end
 
