@@ -47,7 +47,7 @@ end
 local configPath = shell.getWorkingDirectory() .. "/config.lua"
 if not filesystem.exists(configPath) then
   print("Downloading default config.lua...")
-  shell.execute("wget -fq " .. repo .. branch .. "QuarkGluonPlasma/config.lua " .. configPath)
+  shell.execute("wget -fq " .. repo .. branch .. "/QuarkGluonPlasma/config.lua " .. configPath)
 else
   print("Config.lua already exists - preserved")
 end
