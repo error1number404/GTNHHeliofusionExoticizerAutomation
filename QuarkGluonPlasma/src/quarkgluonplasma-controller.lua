@@ -96,6 +96,7 @@ function quarkGluonPlasmaController:new(
   obj.database = component.database
   obj.stateMachine = stateMachineLib:new()
   obj.databaseEntries = {} -- Store database entries for items/fluids
+  obj.nextDatabaseSlot = 1 -- Next slot to use (will wrap around/reuse)
 
   ---Init
   function obj:init()
@@ -119,25 +120,21 @@ function quarkGluonPlasmaController:new(
       self.stateMachine.data.notifyLongIdle = false
     end
     self.stateMachine.states.idle.update = function()
-      local signal = self.redstoneIoProxy.getInput(self.redstoneIoSide)
+      -- Check outputs every 1 second (20 ticks)
+      local currentTime = computer.uptime()
+      local timeSinceLastCheck = currentTime - self.stateMachine.data.lastOutputCheck
+      
+      if timeSinceLastCheck >= 1.0 then
+        self.stateMachine.data.lastOutputCheck = currentTime
+        local outputs, itemsCount = self:getOutputs()
+        local diff = math.ceil(currentTime - self.stateMachine.data.time)
 
-      if signal ~= 0 then
-        -- Check outputs every 1 second (20 ticks)
-        local currentTime = computer.uptime()
-        local timeSinceLastCheck = currentTime - self.stateMachine.data.lastOutputCheck
-        
-        if timeSinceLastCheck >= 1.0 then
-          self.stateMachine.data.lastOutputCheck = currentTime
-          local outputs, itemsCount = self:getOutputs()
-          local diff = math.ceil(currentTime - self.stateMachine.data.time)
-
-          if itemsCount > 0 then
-            self.stateMachine.data.outputs = outputs
-            self.stateMachine:setState(self.stateMachine.states.transferItems)
-          elseif diff > 240 and self.stateMachine.data.notifyLongIdle == false then
-            self.stateMachine.data.notifyLongIdle = true
-            event.push("log_warning", "More than four minutes in the idle state: "..diff)
-          end
+        if itemsCount > 0 then
+          self.stateMachine.data.outputs = outputs
+          self.stateMachine:setState(self.stateMachine.states.transferItems)
+        elseif diff > 240 and self.stateMachine.data.notifyLongIdle == false then
+          self.stateMachine.data.notifyLongIdle = true
+          event.push("log_warning", "More than four minutes in the idle state: "..diff)
         end
       end
     end
@@ -270,21 +267,31 @@ function quarkGluonPlasmaController:new(
   end
 
   ---Create database entry for fluid or item
+  ---Reuses database slots by overwriting existing entries
   ---@param label string
   ---@param isLiquid boolean
   ---@param originalLabel string
   ---@return integer|nil dbIndex
   ---@private
   function obj:createDatabaseEntry(label, isLiquid, originalLabel)
-    -- Check if we already have this entry
+    -- Check if we already have this entry in current session
     if self.databaseEntries[label] then
       return self.databaseEntries[label].dbIndex
     end
 
-    -- Find next available database index
-    local dbIndex = 1
-    while self.database.get(dbIndex) ~= nil do
-      dbIndex = dbIndex + 1
+    -- Reuse database slots by overwriting (database has 81 slots, 1-81)
+    local maxDatabaseSlots = 81
+    local dbIndex = self.nextDatabaseSlot
+    
+    -- Wrap around if we exceed max slots (shouldn't happen with 7 types max, but safety check)
+    if dbIndex > maxDatabaseSlots then
+      dbIndex = 1
+    end
+    
+    -- Increment for next entry
+    self.nextDatabaseSlot = dbIndex + 1
+    if self.nextDatabaseSlot > maxDatabaseSlots then
+      self.nextDatabaseSlot = 1
     end
 
     local result = false
@@ -700,8 +707,9 @@ function quarkGluonPlasmaController:new(
       event.push("log_info", "Cleared all item interface configurations")
     end
     
-    -- Clear all database entries after transfer
+    -- Clear all database entries cache after transfer (database slots will be reused next time)
     self.databaseEntries = {}
+    self.nextDatabaseSlot = 1 -- Reset slot counter for next transfer
     return true
   end
 
