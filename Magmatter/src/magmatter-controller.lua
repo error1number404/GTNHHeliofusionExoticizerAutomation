@@ -9,7 +9,6 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@class MagmatterControllerConfig
 ---@field puzzleOutput1MeInterfaceAddress string -- First puzzle output interface
 ---@field puzzleOutput2MeInterfaceAddress string -- Second puzzle output interface
----@field mainMeInterfaceAddress string -- Main net interface (above puzzle output transposers)
 ---@field readyLiquid1MeInterfaceAddress string -- First ready liquid interface (6 plasmas)
 ---@field readyLiquid2MeInterfaceAddress string -- Second ready liquid interface (6 plasmas)
 ---@field readyLiquid3MeInterfaceAddress string -- Third ready liquid interface (2 plasmas + tachyon + spatially enlarged)
@@ -51,7 +50,6 @@ function magmatterController:newFormConfig(config)
   return self:new(
     config.puzzleOutput1MeInterfaceAddress,
     config.puzzleOutput2MeInterfaceAddress,
-    config.mainMeInterfaceAddress,
     config.readyLiquid1MeInterfaceAddress,
     config.readyLiquid2MeInterfaceAddress,
     config.readyLiquid3MeInterfaceAddress,
@@ -76,7 +74,6 @@ end
 ---Create new MagmatterController object
 ---@param puzzleOutput1MeInterfaceAddress string
 ---@param puzzleOutput2MeInterfaceAddress string
----@param mainMeInterfaceAddress string
 ---@param readyLiquid1MeInterfaceAddress string
 ---@param readyLiquid2MeInterfaceAddress string
 ---@param readyLiquid3MeInterfaceAddress string
@@ -99,7 +96,6 @@ end
 function magmatterController:new(
   puzzleOutput1MeInterfaceAddress,
   puzzleOutput2MeInterfaceAddress,
-  mainMeInterfaceAddress,
   readyLiquid1MeInterfaceAddress,
   readyLiquid2MeInterfaceAddress,
   readyLiquid3MeInterfaceAddress,
@@ -154,7 +150,6 @@ function magmatterController:new(
   function obj:init()
     self.puzzleOutput1MeInterfaceProxy = componentDiscoverLib.discoverProxy(puzzleOutput1MeInterfaceAddress, "Puzzle Output 1 Me Interface", "me_interface")
     self.puzzleOutput2MeInterfaceProxy = componentDiscoverLib.discoverProxy(puzzleOutput2MeInterfaceAddress, "Puzzle Output 2 Me Interface", "me_interface")
-    self.mainMeInterfaceProxy = componentDiscoverLib.discoverProxy(mainMeInterfaceAddress, "Main Me Interface", "me_interface")
     self.readyLiquid1MeInterfaceProxy = componentDiscoverLib.discoverProxy(readyLiquid1MeInterfaceAddress, "Ready Liquid 1 Me Interface", "me_interface")
     self.readyLiquid2MeInterfaceProxy = componentDiscoverLib.discoverProxy(readyLiquid2MeInterfaceAddress, "Ready Liquid 2 Me Interface", "me_interface")
     self.readyLiquid3MeInterfaceProxy = componentDiscoverLib.discoverProxy(readyLiquid3MeInterfaceAddress, "Ready Liquid 3 Me Interface", "me_interface")

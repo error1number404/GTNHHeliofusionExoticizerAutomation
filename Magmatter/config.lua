@@ -28,7 +28,6 @@ local config = {
   controller = magmatterController:newFormConfig({
     puzzleOutput1MeInterfaceAddress = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", -- Address of first puzzle output me interface.
     puzzleOutput2MeInterfaceAddress = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", -- Address of second puzzle output me interface.
-    mainMeInterfaceAddress = "cccccccc-cccc-cccc-cccc-cccccccccccc", -- Address of main me interface (above puzzle output transposers).
     readyLiquid1MeInterfaceAddress = "dddddddd-dddd-dddd-dddd-dddddddddddd", -- Address of first ready liquid me interface (6 plasmas).
     readyLiquid2MeInterfaceAddress = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", -- Address of second ready liquid me interface (6 plasmas).
     readyLiquid3MeInterfaceAddress = "ffffffff-ffff-ffff-ffff-ffffffffffff", -- Address of third ready liquid me interface (2 plasmas + tachyon + spatially enlarged).
