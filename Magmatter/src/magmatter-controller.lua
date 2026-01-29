@@ -381,7 +381,7 @@ function magmatterController:new(
     end
 
     -- Debug: Log detected values before validation
-    event.push("log_debug", "Detection summary - Tachyon Rich: "..puzzleOutput.tachyonRichAmount.."L, Spatially Enlarged: "..puzzleOutput.spatiallyEnlargedAmount.."L, Dust: "..(puzzleOutput.dustLabel or "nil"))
+    event.push("log_debug", "Detection summary - Tachyon Rich: "..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged: "..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust: "..(puzzleOutput.dustLabel or "nil"))
 
     -- Validate we have all required outputs
     if puzzleOutput.tachyonRichAmount == 0 or puzzleOutput.spatiallyEnlargedAmount == 0 or puzzleOutput.dustLabel == nil then
@@ -400,10 +400,14 @@ function magmatterController:new(
       return nil
     end
 
-    -- Calculate required plasma amount (difference in ingots)
-    puzzleOutput.requiredPlasmaAmount = puzzleOutput.spatiallyEnlargedAmount - puzzleOutput.tachyonRichAmount
+    -- Calculate required plasma amount
+    -- Note: Detected amounts are in mB from transposer
+    -- The difference represents the required plasma in the same units (mB)
+    -- Convert to ingots: 1 ingot = 144 mB
+    local differenceMB = puzzleOutput.spatiallyEnlargedAmount - puzzleOutput.tachyonRichAmount
+    puzzleOutput.requiredPlasmaAmount = math.floor(differenceMB / 144) -- Convert to ingots
 
-    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."L, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."L, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.." ingots")
+    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.." ingots ("..differenceMB.."mB)")
 
     return puzzleOutput
   end
@@ -521,31 +525,44 @@ function magmatterController:new(
     end
 
     -- Pull all liquids from interface fluid tanks
+    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1000 mB
     local tankCount = transposerProxy.getTankCount(outputSide)
     if tankCount and tankCount > 0 then
       for tank = 1, tankCount do
-        local fluid = transposerProxy.getFluidInTank(outputSide, tank)
-        if fluid and fluid.amount and fluid.amount > 0 then
-          event.push("log_info", "Pulling "..fluid.amount.."L of "..(fluid.label or fluid.name or "Unknown").." from "..interfaceName.." tank "..tank)
-          local transferred = 0
-          local maxAttempts = 100
-          local attempt = 0
+        local maxAttempts = 100
+        local attempt = 0
+        
+        while attempt < maxAttempts do
+          attempt = attempt + 1
+          local fluid = transposerProxy.getFluidInTank(outputSide, tank)
           
-          while transferred < fluid.amount and attempt < maxAttempts do
-            attempt = attempt + 1
-            local transferAmount = math.min(fluid.amount - transferred, 16000)
-            local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, tank)
-            
-            if result then
-              transferred = transferred + transferAmount
-            else
-              os.sleep(0.05) -- 1 tick delay
-            end
+          if not fluid or not fluid.amount or fluid.amount == 0 then
+            -- Tank is empty, we're done
+            break
           end
           
-          if transferred < fluid.amount then
-            event.push("log_warning", "Only transferred "..transferred.."L of "..(fluid.label or fluid.name).." from "..interfaceName)
+          if attempt == 1 then
+            event.push("log_info", "Pulling "..fluid.amount.."mB of "..(fluid.label or fluid.name or "Unknown").." from "..interfaceName.." tank "..tank)
           end
+          
+          -- Transfer up to 16000 mB at a time (16 buckets)
+          local transferAmount = math.min(fluid.amount, 16000)
+          local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, tank)
+          
+          if result then
+            -- Successfully transferred, check if there's more
+            os.sleep(0.05) -- Small delay to let the system update
+          else
+            -- Transfer failed, might be full or blocked
+            event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..(fluid.label or fluid.name).." from "..interfaceName.." tank "..tank)
+            os.sleep(0.1) -- Wait a bit longer before retrying
+          end
+        end
+        
+        -- Final check to see if anything is left
+        local remainingFluid = transposerProxy.getFluidInTank(outputSide, tank)
+        if remainingFluid and remainingFluid.amount and remainingFluid.amount > 0 then
+          event.push("log_warning", "Still "..remainingFluid.amount.."mB of "..(remainingFluid.label or remainingFluid.name).." remaining in "..interfaceName.." tank "..tank)
         end
       end
     end
@@ -603,7 +620,8 @@ function magmatterController:new(
   ---@return boolean
   ---@private
   function obj:pullFluidFromReadyInterface(transposerProxy, sourceSide, destSide, fluidName, requiredAmount)
-    event.push("log_info", "Pulling "..requiredAmount.."L of "..fluidName)
+    -- requiredAmount is in mB (from puzzle output detection)
+    event.push("log_info", "Pulling "..requiredAmount.."mB of "..fluidName)
 
     -- Check if fluid is available in interface inventory tanks
     local tankCount = transposerProxy.getTankCount(sourceSide)
@@ -634,35 +652,50 @@ function magmatterController:new(
     end
 
     if availableAmount < requiredAmount then
-      event.push("log_warning", "Only "..availableAmount.."L available, need "..requiredAmount.."L of "..fluidName)
+      event.push("log_warning", "Only "..availableAmount.."mB available, need "..requiredAmount.."mB of "..fluidName)
     end
 
+    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1000 mB
+    -- Convert required amount from L to mB if needed (assuming detected amounts are in mB already)
+    -- The puzzleOutput amounts are detected from transposer, so they're already in mB
+    local requiredAmountMB = requiredAmount -- Already in mB from detection
+    local amountToTransfer = math.min(availableAmount, requiredAmountMB)
     local transferred = 0
     local maxAttempts = 200
     local attempt = 0
-    local amountToTransfer = math.min(availableAmount, requiredAmount)
 
     while transferred < amountToTransfer and attempt < maxAttempts do
       attempt = attempt + 1
-      local transferAmount = math.min(amountToTransfer - transferred, 16000)
+      
+      -- Refresh fluid state to get current amount
+      local currentFluid = transposerProxy.getFluidInTank(sourceSide, tankIndex)
+      if not currentFluid or not currentFluid.amount or currentFluid.amount == 0 then
+        event.push("log_warning", "Fluid "..fluidName.." no longer available in source tank")
+        break
+      end
+      
+      local remainingNeeded = amountToTransfer - transferred
+      local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
       local result = transposerProxy.transferFluid(sourceSide, destSide, transferAmount, tankIndex)
 
       if result then
         transferred = transferred + transferAmount
         if attempt % 20 == 0 then
-          event.push("log_info", "Transferred "..transferred.."L of "..fluidName.." (target: "..amountToTransfer.."L)")
+          event.push("log_info", "Transferred "..transferred.."mB of "..fluidName.." (target: "..amountToTransfer.."mB)")
         end
+        os.sleep(0.05) -- Small delay to let the system update
       else
-        os.sleep(0.05) -- 1 tick delay
+        event.push("log_warning", "Transfer attempt "..attempt.." failed for "..fluidName)
+        os.sleep(0.1) -- Wait a bit longer before retrying
       end
     end
 
     if transferred < amountToTransfer then
-      event.push("log_warning", "Only transferred "..transferred.."L of "..fluidName.." out of "..amountToTransfer.."L requested")
+      event.push("log_warning", "Only transferred "..transferred.."mB of "..fluidName.." out of "..amountToTransfer.."mB requested")
       return false
     end
 
-    event.push("log_info", "Successfully transferred "..transferred.."L of "..fluidName)
+    event.push("log_info", "Successfully transferred "..transferred.."mB of "..fluidName)
     return true
   end
 
@@ -725,7 +758,16 @@ function magmatterController:new(
 
         while transferred < amountToTransfer and attempt < maxAttempts do
           attempt = attempt + 1
-          local transferAmount = math.min(amountToTransfer - transferred, 16000)
+          
+          -- Refresh fluid state to get current amount
+          local currentFluid = interfaceData.transposer.getFluidInTank(interfaceData.readySide, tankIndex)
+          if not currentFluid or not currentFluid.amount or currentFluid.amount == 0 then
+            event.push("log_warning", "Plasma "..plasmaLabel.." no longer available in "..interfaceData.name.." tank")
+            break
+          end
+          
+          local remainingNeeded = amountToTransfer - transferred
+          local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
           local result = interfaceData.transposer.transferFluid(
             interfaceData.readySide,
             interfaceData.outputSide,
@@ -739,8 +781,10 @@ function magmatterController:new(
             if attempt % 20 == 0 then
               event.push("log_info", "Transferred "..transferred.."mB of "..plasmaLabel.." from "..interfaceData.name.." (total: "..totalTransferred.."mB)")
             end
+            os.sleep(0.05) -- Small delay to let the system update
           else
-            os.sleep(0.05) -- 1 tick delay
+            event.push("log_warning", "Transfer attempt "..attempt.." failed for "..plasmaLabel.." from "..interfaceData.name)
+            os.sleep(0.1) -- Wait a bit longer before retrying
           end
         end
 
