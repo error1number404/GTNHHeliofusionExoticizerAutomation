@@ -678,9 +678,10 @@ function magmatterController:new(
         local fluid = transposerProxy.getFluidInTank(sourceSide, tank)
         if fluid and fluid.amount and fluid.amount > 0 then
           local fluidLabel = fluid.label or fluid.name or ""
-          if string.find(fluidLabel:lower(), fluidName:lower()) or 
-             (fluidName == "Tachyon Rich Temporal Fluid" and string.find(fluidLabel:lower(), "tachyon") and string.find(fluidLabel:lower(), "rich")) or
-             (fluidName == "Spatially Enlarged Fluid" and string.find(fluidLabel:lower(), "spatially") and string.find(fluidLabel:lower(), "enlarged")) then
+          local fluidLabelLower = fluidLabel:lower()
+          if string.find(fluidLabelLower, fluidName:lower()) or 
+             (fluidName == "Tachyon Rich Temporal Fluid" and string.find(fluidLabelLower, "temporal")) or
+             (fluidName == "Spatially Enlarged Fluid" and string.find(fluidLabelLower, "spatially") and string.find(fluidLabelLower, "enlarged")) then
             found = true
             availableAmount = fluid.amount
             tankIndex = tank
