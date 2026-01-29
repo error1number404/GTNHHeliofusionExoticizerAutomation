@@ -525,7 +525,7 @@ function magmatterController:new(
     end
 
     -- Pull all liquids from interface fluid tanks
-    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1000 mB
+    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1 mB
     local tankCount = transposerProxy.getTankCount(outputSide)
     if tankCount and tankCount > 0 then
       for tank = 1, tankCount do
@@ -681,7 +681,7 @@ function magmatterController:new(
           local fluidLabel = fluid.label or fluid.name or ""
           local fluidLabelLower = fluidLabel:lower()
           if string.find(fluidLabelLower, fluidName:lower()) or 
-             (fluidName == "Tachyon Rich Temporal Fluid" and string.find(fluidLabelLower, "temporal")) or
+             (fluidName == "Tachyon Rich Temporal Fluid" and string.find(fluidLabelLower, "tachyon") and string.find(fluidLabelLower, "rich") and string.find(fluidLabelLower, "temporal")) or
              (fluidName == "Spatially Enlarged Fluid" and string.find(fluidLabelLower, "spatially") and string.find(fluidLabelLower, "enlarged")) then
             found = true
             availableAmount = fluid.amount
@@ -701,8 +701,7 @@ function magmatterController:new(
       event.push("log_warning", "Only "..availableAmount.."mB available, need "..requiredAmount.."mB of "..fluidName)
     end
 
-    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1000 mB
-    -- Convert required amount from L to mB if needed (assuming detected amounts are in mB already)
+    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1 mB
     -- The puzzleOutput amounts are detected from transposer, so they're already in mB
     local requiredAmountMB = requiredAmount -- Already in mB from detection
     local amountToTransfer = math.min(availableAmount, requiredAmountMB)
@@ -886,9 +885,10 @@ function magmatterController:new(
 
     -- Check both interfaces
     for _, fluid in pairs(liquids1) do
-      if fluid and fluid.name then
-        local fluidName = fluid.name:lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") then
+      if fluid then
+        local fluidLabel = fluid.label or fluid.name or ""
+        local fluidName = fluidLabel:lower()
+        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
           tachyonFound = true
           event.push("log_info", "Found "..(fluid.amount or 0).."L tachyon rich in puzzle output 1")
         elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
@@ -902,9 +902,10 @@ function magmatterController:new(
     end
 
     for _, fluid in pairs(liquids2) do
-      if fluid and fluid.name then
-        local fluidName = fluid.name:lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") then
+      if fluid then
+        local fluidLabel = fluid.label or fluid.name or ""
+        local fluidName = fluidLabel:lower()
+        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
           tachyonFound = true
           event.push("log_info", "Found "..(fluid.amount or 0).."L tachyon rich in puzzle output 2")
         elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
