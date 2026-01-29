@@ -54,7 +54,7 @@ end
 local function loop()
   while true do
     config.controller:loop()
-    os.sleep(1)
+    os.sleep(0.1)
   end
 end
 
