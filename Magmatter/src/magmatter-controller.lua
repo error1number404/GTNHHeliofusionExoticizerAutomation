@@ -306,24 +306,40 @@ function magmatterController:new(
     }
 
     -- Check both interfaces for tachyon rich temporal fluid
+    -- Prioritize label over name since label is what's displayed in debug output
+    -- Handle empty strings by checking if they're non-empty
     for _, fluid in pairs(liquids1) do
       if fluid then
-        local fluidName = (fluid.name or fluid.label or ""):lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
+        local fluidLabel = fluid.label or ""
+        local fluidName = fluid.name or ""
+        local fluidNameToCheck = (fluidLabel ~= "" and fluidLabel or fluidName):lower()
+        event.push("log_debug", "Checking fluid: '"..fluidNameToCheck.."' (name='"..fluidName.."', label='"..fluidLabel.."')")
+        if string.find(fluidNameToCheck, "tachyon") and string.find(fluidNameToCheck, "rich") and string.find(fluidNameToCheck, "temporal") then
+          event.push("log_debug", "  -> Matched Tachyon Rich Temporal Fluid, amount: "..(fluid.amount or 0))
           puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
+        elseif string.find(fluidNameToCheck, "spatially") and string.find(fluidNameToCheck, "enlarged") then
+          event.push("log_debug", "  -> Matched Spatially Enlarged Fluid, amount: "..(fluid.amount or 0))
           puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+        else
+          event.push("log_debug", "  -> No match")
         end
       end
     end
 
     for _, fluid in pairs(liquids2) do
       if fluid then
-        local fluidName = (fluid.name or fluid.label or ""):lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
+        local fluidLabel = fluid.label or ""
+        local fluidName = fluid.name or ""
+        local fluidNameToCheck = (fluidLabel ~= "" and fluidLabel or fluidName):lower()
+        event.push("log_debug", "Checking fluid: '"..fluidNameToCheck.."' (name='"..fluidName.."', label='"..fluidLabel.."')")
+        if string.find(fluidNameToCheck, "tachyon") and string.find(fluidNameToCheck, "rich") and string.find(fluidNameToCheck, "temporal") then
+          event.push("log_debug", "  -> Matched Tachyon Rich Temporal Fluid, amount: "..(fluid.amount or 0))
           puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
+        elseif string.find(fluidNameToCheck, "spatially") and string.find(fluidNameToCheck, "enlarged") then
+          event.push("log_debug", "  -> Matched Spatially Enlarged Fluid, amount: "..(fluid.amount or 0))
           puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+        else
+          event.push("log_debug", "  -> No match")
         end
       end
     end
@@ -363,6 +379,9 @@ function magmatterController:new(
         end
       end
     end
+
+    -- Debug: Log detected values before validation
+    event.push("log_debug", "Detection summary - Tachyon Rich: "..puzzleOutput.tachyonRichAmount.."L, Spatially Enlarged: "..puzzleOutput.spatiallyEnlargedAmount.."L, Dust: "..(puzzleOutput.dustLabel or "nil"))
 
     -- Validate we have all required outputs
     if puzzleOutput.tachyonRichAmount == 0 or puzzleOutput.spatiallyEnlargedAmount == 0 or puzzleOutput.dustLabel == nil then
