@@ -565,8 +565,10 @@ function magmatterController:new(
           end
           
           -- Transfer up to maxTransfer mB at a time
+          -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
+          local fluidSide = tank - 1
           local transferAmount = math.min(fluid.amount, maxTransfer)
-          local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, tank)
+          local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, fluidSide)
           
           if result then
             -- Successfully transferred, reset failure counter
@@ -579,7 +581,8 @@ function magmatterController:new(
             -- If we've failed multiple times with the same amount, try a much smaller amount
             if consecutiveFailures >= 3 then
               local smallAmount = math.min(fluid.amount, 10) -- Try just 10 mB
-              local smallResult = transposerProxy.transferFluid(outputSide, mainSide, smallAmount, tank)
+              local fluidSide = tank - 1 -- Convert tank index to side index
+              local smallResult = transposerProxy.transferFluid(outputSide, mainSide, smallAmount, fluidSide)
               if smallResult then
                 consecutiveFailures = 0
                 event.push("log_info", "Successfully transferred "..smallAmount.."mB using smaller amount")
@@ -721,7 +724,9 @@ function magmatterController:new(
       
       local remainingNeeded = amountToTransfer - transferred
       local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
-      local result = transposerProxy.transferFluid(sourceSide, destSide, transferAmount, tankIndex)
+      -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
+      local fluidSide = tankIndex - 1
+      local result = transposerProxy.transferFluid(sourceSide, destSide, transferAmount, fluidSide)
 
       if result then
         transferred = transferred + transferAmount
@@ -813,11 +818,13 @@ function magmatterController:new(
           
           local remainingNeeded = amountToTransfer - transferred
           local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
+          -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
+          local fluidSide = tankIndex - 1
           local result = interfaceData.transposer.transferFluid(
             interfaceData.readySide,
             interfaceData.outputSide,
             transferAmount,
-            tankIndex
+            fluidSide
           )
 
           if result then
