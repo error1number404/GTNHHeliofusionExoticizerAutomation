@@ -588,9 +588,10 @@ function magmatterController:new(
                 -- Even small amount failed, destination might be full or blocked
                 event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..", consecutive failures: "..consecutiveFailures..")")
                 
-                -- If we've failed 10 times in a row, give up on this fluid
-                if consecutiveFailures >= 10 then
-                  event.push("log_error", "Giving up on transferring "..currentFluidName.." from "..interfaceName.." tank "..tank.." after "..consecutiveFailures.." consecutive failures")
+                -- If we've failed 5 times in a row (reduced from 10), give up on this fluid
+                -- This prevents getting stuck on fluids that can't be transferred
+                if consecutiveFailures >= 5 then
+                  event.push("log_error", "Giving up on transferring "..currentFluidName.." from "..interfaceName.." tank "..tank.." after "..consecutiveFailures.." consecutive failures. Fluid may be incompatible or destination may be full.")
                   break
                 end
                 
