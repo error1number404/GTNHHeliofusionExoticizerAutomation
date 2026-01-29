@@ -1,4 +1,5 @@
 local keyboard = require("keyboard")
+local computer = require("computer")
 
 local programLib = require("lib.program-lib")
 local guiLib = require("lib.gui-lib")
@@ -61,10 +62,29 @@ local function loop()
 end
 
 local function guiLoop()
-  gui:render({
-    state = config.controller.stateMachine.currentState ~= nil and config.controller.stateMachine.currentState.name or "nil",
-    logs = config.logger.handlers[2]["logs"].list
-  })
+  -- Only render GUI when stuck (error state or idle for too long)
+  local currentState = config.controller.stateMachine.currentState
+  local stateName = currentState ~= nil and currentState.name or "nil"
+  local isStuck = false
+  
+  if stateName == "Error" then
+    -- Always render when in error state
+    isStuck = true
+  elseif stateName == "Idle" then
+    -- Render if idle for more than 4 minutes (stuck/idle warning threshold)
+    local currentTime = computer.uptime()
+    local timeInIdle = currentTime - (config.controller.stateMachine.data.time or 0)
+    if timeInIdle > 240 then -- IDLE_WARNING_THRESHOLD
+      isStuck = true
+    end
+  end
+  
+  if isStuck then
+    gui:render({
+      state = stateName,
+      logs = config.logger.handlers[2]["logs"].list
+    })
+  end
 end
 
 local function errorButtonHandler()
