@@ -39,7 +39,7 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field spatiallyEnlargedAmount number -- Amount of spatially enlarged fluid (51-100L)
 ---@field dustLabel string -- Label of the dust material
 ---@field dustOriginalLabel string -- Original label of the dust
----@field requiredPlasmaAmount number -- Required plasma amount in ingots (spatially_enlarged - tachyon_rich)
+---@field requiredPlasmaAmount number -- Required plasma amount in mB ((spatially_enlarged - tachyon_rich) * 144)
 
 local magmatterController = {}
 
@@ -402,12 +402,11 @@ function magmatterController:new(
 
     -- Calculate required plasma amount
     -- Note: Detected amounts are in mB from transposer
-    -- The difference represents the required plasma in the same units (mB)
-    -- Convert to ingots: 1 ingot = 144 mB
-    local differenceMB = puzzleOutput.spatiallyEnlargedAmount - puzzleOutput.tachyonRichAmount
-    puzzleOutput.requiredPlasmaAmount = math.floor(differenceMB / 144) -- Convert to ingots
+    -- The absolute difference (spatial - tachyon) multiplied by 144 gives the required plasma amount in mB
+    local differenceMB = math.abs(puzzleOutput.spatiallyEnlargedAmount - puzzleOutput.tachyonRichAmount)
+    puzzleOutput.requiredPlasmaAmount = differenceMB * 144 -- Required plasma in mB
 
-    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.." ingots ("..differenceMB.."mB)")
+    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.."mB ("..math.floor(puzzleOutput.requiredPlasmaAmount/144).." ingots)")
 
     return puzzleOutput
   end
@@ -752,14 +751,11 @@ function magmatterController:new(
   ---Pull plasma from ready liquid interfaces (all 3) and transfer to puzzle output
   ---Plasma interfaces are below transposers, puzzle output is above transposers
   ---@param dustLabel string
-  ---@param requiredAmount number Amount in ingots
+  ---@param requiredAmountMB number Amount in mB
   ---@return boolean
   ---@private
-  function obj:pullPlasmaFromReadyInterfaces(dustLabel, requiredAmount)
-    event.push("log_info", "Pulling "..requiredAmount.." ingots of "..dustLabel.." plasma from all ready interfaces")
-
-    -- Convert ingots to mB (1 ingot = 144 mB)
-    local requiredAmountMB = requiredAmount * 144
+  function obj:pullPlasmaFromReadyInterfaces(dustLabel, requiredAmountMB)
+    event.push("log_info", "Pulling "..requiredAmountMB.."mB ("..math.floor(requiredAmountMB/144).." ingots) of "..dustLabel.." plasma from all ready interfaces")
     local totalTransferred = 0
     local interfaces = {
       {proxy = self.readyLiquid1MeInterfaceProxy, transposer = self.readyLiquid1TransposerProxy, readySide = self.readyLiquid1TransposerReadySide, outputSide = self.readyLiquid1TransposerOutputSide, name = "Ready Liquid 1"},
@@ -767,7 +763,7 @@ function magmatterController:new(
       {proxy = self.readyLiquid3MeInterfaceProxy, transposer = self.readyLiquid3TransposerProxy, readySide = self.readyLiquid3TransposerReadySide, outputSide = self.readyLiquid3TransposerOutputSide, name = "Ready Liquid 3"}
     }
 
-      -- Search all interfaces for the required plasma (check interface inventory directly)
+    -- Search all interfaces for the required plasma (check interface inventory directly)
     for _, interfaceData in ipairs(interfaces) do
       if totalTransferred >= requiredAmountMB then
         break
@@ -849,7 +845,7 @@ function magmatterController:new(
     end
 
     if totalTransferred < requiredAmountMB then
-      event.push("log_error", "Only transferred "..totalTransferred.."mB ("..math.floor(totalTransferred/144).." ingots) of plasma out of "..requiredAmountMB.."mB ("..requiredAmount.." ingots) requested")
+      event.push("log_error", "Only transferred "..totalTransferred.."mB ("..math.floor(totalTransferred/144).." ingots) of plasma out of "..requiredAmountMB.."mB ("..math.floor(requiredAmountMB/144).." ingots) requested")
       return false
     end
 
@@ -888,22 +884,20 @@ function magmatterController:new(
 
     local tachyonFound = false
     local spatiallyEnlargedFound = false
-    local plasmaFound = false
 
     -- Check both interfaces
+    -- Note: Plasmas are in ready liquid interfaces, not puzzle output
+    -- Puzzle output only contains tachyon, spatially enlarged fluid, and dust
     for _, fluid in pairs(liquids1) do
       if fluid then
         local fluidLabel = fluid.label or fluid.name or ""
         local fluidName = fluidLabel:lower()
         if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
           tachyonFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."L tachyon rich in puzzle output 1")
+          event.push("log_info", "Found "..(fluid.amount or 0).."mB tachyon rich in puzzle output 1")
         elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
           spatiallyEnlargedFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."L spatially enlarged in puzzle output 1")
-        elseif string.find(fluidName, "plasma") and string.find(fluidName, puzzleOutput.dustLabel:lower()) then
-          plasmaFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB plasma in puzzle output 1")
+          event.push("log_info", "Found "..(fluid.amount or 0).."mB spatially enlarged in puzzle output 1")
         end
       end
     end
@@ -914,13 +908,10 @@ function magmatterController:new(
         local fluidName = fluidLabel:lower()
         if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
           tachyonFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."L tachyon rich in puzzle output 2")
+          event.push("log_info", "Found "..(fluid.amount or 0).."mB tachyon rich in puzzle output 2")
         elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
           spatiallyEnlargedFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."L spatially enlarged in puzzle output 2")
-        elseif string.find(fluidName, "plasma") and string.find(fluidName, puzzleOutput.dustLabel:lower()) then
-          plasmaFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB plasma in puzzle output 2")
+          event.push("log_info", "Found "..(fluid.amount or 0).."mB spatially enlarged in puzzle output 2")
         end
       end
     end
@@ -930,9 +921,6 @@ function magmatterController:new(
     end
     if not spatiallyEnlargedFound then
       event.push("log_warning", "Spatially enlarged fluid not found in puzzle output interfaces")
-    end
-    if not plasmaFound then
-      event.push("log_warning", "Plasma not found in puzzle output interfaces")
     end
 
     -- The puzzle should automatically process once all required fluids are returned
