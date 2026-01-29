@@ -275,6 +275,27 @@ function magmatterController:new(
       self.puzzleOutput2TransposerOutputSide
     )
 
+    -- Debug: Log what we found
+    if #items1 > 0 or #liquids1 > 0 then
+      event.push("log_debug", "Puzzle Output 1 - Items: "..#items1..", Liquids: "..#liquids1)
+      for _, item in pairs(items1) do
+        event.push("log_debug", "  Item: "..(item.label or item.name or "Unknown").." x"..(item.size or 0))
+      end
+      for _, fluid in pairs(liquids1) do
+        event.push("log_debug", "  Fluid: "..(fluid.label or fluid.name or "Unknown").." "..(fluid.amount or 0).."L")
+      end
+    end
+    
+    if #items2 > 0 or #liquids2 > 0 then
+      event.push("log_debug", "Puzzle Output 2 - Items: "..#items2..", Liquids: "..#liquids2)
+      for _, item in pairs(items2) do
+        event.push("log_debug", "  Item: "..(item.label or item.name or "Unknown").." x"..(item.size or 0))
+      end
+      for _, fluid in pairs(liquids2) do
+        event.push("log_debug", "  Fluid: "..(fluid.label or fluid.name or "Unknown").." "..(fluid.amount or 0).."L")
+      end
+    end
+
     ---@type PuzzleOutput
     local puzzleOutput = {
       tachyonRichAmount = 0,
@@ -286,18 +307,24 @@ function magmatterController:new(
 
     -- Check both interfaces for tachyon rich temporal fluid
     for _, fluid in pairs(liquids1) do
-      if fluid and fluid.name and string.find(fluid.name:lower(), "tachyon") and string.find(fluid.name:lower(), "rich") and string.find(fluid.name:lower(), "temporal") then
-        puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-      elseif fluid and fluid.name and string.find(fluid.name:lower(), "spatially") and string.find(fluid.name:lower(), "enlarged") then
-        puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+      if fluid then
+        local fluidName = (fluid.name or fluid.label or ""):lower()
+        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
+          puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
+        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
+          puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+        end
       end
     end
 
     for _, fluid in pairs(liquids2) do
-      if fluid and fluid.name and string.find(fluid.name:lower(), "tachyon") and string.find(fluid.name:lower(), "rich") and string.find(fluid.name:lower(), "temporal") then
-        puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-      elseif fluid and fluid.name and string.find(fluid.name:lower(), "spatially") and string.find(fluid.name:lower(), "enlarged") then
-        puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+      if fluid then
+        local fluidName = (fluid.name or fluid.label or ""):lower()
+        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
+          puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
+        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
+          puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+        end
       end
     end
 
@@ -339,6 +366,18 @@ function magmatterController:new(
 
     -- Validate we have all required outputs
     if puzzleOutput.tachyonRichAmount == 0 or puzzleOutput.spatiallyEnlargedAmount == 0 or puzzleOutput.dustLabel == nil then
+      -- Log what's missing for debugging
+      local missing = {}
+      if puzzleOutput.tachyonRichAmount == 0 then
+        table.insert(missing, "Tachyon Rich Temporal Fluid")
+      end
+      if puzzleOutput.spatiallyEnlargedAmount == 0 then
+        table.insert(missing, "Spatially Enlarged Fluid")
+      end
+      if puzzleOutput.dustLabel == nil then
+        table.insert(missing, "Dust")
+      end
+      event.push("log_debug", "Puzzle output incomplete. Missing: "..table.concat(missing, ", "))
       return nil
     end
 
