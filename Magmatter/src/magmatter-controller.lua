@@ -6,6 +6,23 @@ local sides = require("sides")
 local stateMachineLib = require("lib.state-machine-lib")
 local componentDiscoverLib = require("lib.component-discover-lib")
 
+-- Constants
+local PLASMA_CONVERSION_FACTOR = 144 -- mB per ingot
+local MAX_FLUID_TRANSFER = 16000 -- Maximum mB per transfer
+local SMALL_FLUID_TRANSFER = 10 -- Small retry amount in mB
+local MAX_ITEM_STACK_SIZE = 64
+local MAX_TRANSFER_ATTEMPTS = 200
+local MAX_ITEM_TRANSFER_ATTEMPTS = 50
+local MAX_FLUID_TRANSFER_ATTEMPTS = 100
+local CONSECUTIVE_FAILURE_THRESHOLD = 3
+local MAX_CONSECUTIVE_FAILURES = 5
+local PROGRESS_REPORT_INTERVAL = 20
+local IDLE_CHECK_INTERVAL = 1.0 -- seconds
+local IDLE_WARNING_THRESHOLD = 240 -- seconds (4 minutes)
+local TRANSFER_DELAY_SHORT = 0.05 -- seconds
+local TRANSFER_DELAY_MEDIUM = 0.1 -- seconds
+local TRANSFER_DELAY_LONG = 0.2 -- seconds
+
 ---@class MagmatterControllerConfig
 ---@field puzzleOutput1MeInterfaceAddress string -- First puzzle output interface
 ---@field puzzleOutput2MeInterfaceAddress string -- Second puzzle output interface
@@ -42,6 +59,64 @@ local componentDiscoverLib = require("lib.component-discover-lib")
 ---@field requiredPlasmaAmount number -- Required plasma amount in mB ((spatially_enlarged - tachyon_rich) * 144)
 
 local magmatterController = {}
+
+-- Helper functions for fluid matching
+local function getFluidNameToCheck(fluid)
+  local fluidLabel = fluid.label or ""
+  local fluidName = fluid.name or ""
+  return (fluidLabel ~= "" and fluidLabel or fluidName):lower()
+end
+
+local function isTachyonRichTemporalFluid(fluidName)
+  return string.find(fluidName, "tachyon") and 
+         string.find(fluidName, "rich") and 
+         string.find(fluidName, "temporal")
+end
+
+local function isSpatiallyEnlargedFluid(fluidName)
+  return string.find(fluidName, "spatially") and 
+         string.find(fluidName, "enlarged")
+end
+
+local function isPlasmaFluid(fluidName, dustLabel)
+  -- Check that it's a plasma fluid
+  if not string.find(fluidName, "plasma") then
+    return false
+  end
+  
+  -- Extract the material name (everything before "Plasma")
+  -- Examples: "Draconium Plasma" -> "Draconium"
+  --           "Awakened Draconium Plasma" -> "Awakened Draconium"
+  local materialName = fluidName:match("^(.+)%s+plasma")
+  if not materialName then
+    return false
+  end
+  
+  -- Normalize: trim spaces and convert to lowercase
+  materialName = materialName:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+  local dustLabelLower = dustLabel:lower()
+  
+  -- Require exact match: "Draconium" should match "Draconium Plasma"
+  -- but NOT "Awakened Draconium Plasma"
+  -- This prevents "Draconium" from matching "Awakened Draconium"
+  return materialName == dustLabelLower
+end
+
+local function extractDustLabel(itemLabel)
+  local label = itemLabel:match("Pile of%s(.+)%sDust")
+  if label == nil then
+    label = itemLabel:match("(.+) Dust")
+  end
+  if label == nil then
+    label = itemLabel
+  end
+  return label
+end
+
+local function convertTankIndexToSideIndex(tankIndex)
+  -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
+  return tankIndex - 1
+end
 
 ---Create new MagmatterController object from config
 ---@param config MagmatterControllerConfig
@@ -171,11 +246,10 @@ function magmatterController:new(
       self.stateMachine.data.notifyLongIdle = false
     end
     self.stateMachine.states.idle.update = function()
-      -- Check outputs every 1 second (20 ticks)
       local currentTime = computer.uptime()
       local timeSinceLastCheck = currentTime - self.stateMachine.data.lastOutputCheck
       
-      if timeSinceLastCheck >= 1.0 then
+      if timeSinceLastCheck >= IDLE_CHECK_INTERVAL then
         self.stateMachine.data.lastOutputCheck = currentTime
         local puzzleOutput = self:getPuzzleOutputs()
         local diff = math.ceil(currentTime - self.stateMachine.data.time)
@@ -183,7 +257,7 @@ function magmatterController:new(
         if puzzleOutput ~= nil then
           self.stateMachine.data.puzzleOutput = puzzleOutput
           self.stateMachine:setState(self.stateMachine.states.pullToMain)
-        elseif diff > 240 and self.stateMachine.data.notifyLongIdle == false then
+        elseif diff > IDLE_WARNING_THRESHOLD and not self.stateMachine.data.notifyLongIdle then
           self.stateMachine.data.notifyLongIdle = true
           event.push("log_warning", "More than four minutes in the idle state: "..diff)
         end
@@ -257,6 +331,69 @@ function magmatterController:new(
     end
   end
 
+  ---Log interface contents for debugging
+  ---@param items table
+  ---@param fluids table
+  ---@param interfaceName string
+  ---@private
+  function obj:logInterfaceContents(items, fluids, interfaceName)
+    if #items > 0 or #fluids > 0 then
+      event.push("log_debug", interfaceName.." - Items: "..#items..", Liquids: "..#fluids)
+      for _, item in pairs(items) do
+        event.push("log_debug", "  Item: "..(item.label or item.name or "Unknown").." x"..(item.size or 0))
+      end
+      for _, fluid in pairs(fluids) do
+        event.push("log_debug", "  Fluid: "..(fluid.label or fluid.name or "Unknown").." "..(fluid.amount or 0).."L")
+      end
+    end
+  end
+
+  ---Process fluids from interface and update puzzle output
+  ---@param fluids table
+  ---@param puzzleOutput PuzzleOutput
+  ---@private
+  function obj:processFluidsFromInterface(fluids, puzzleOutput)
+    for _, fluid in pairs(fluids) do
+      if not fluid then
+        goto continue
+      end
+      
+      local fluidNameToCheck = getFluidNameToCheck(fluid)
+      local fluidLabel = fluid.label or ""
+      local fluidName = fluid.name or ""
+      
+      event.push("log_debug", "Checking fluid: '"..fluidNameToCheck.."' (name='"..fluidName.."', label='"..fluidLabel.."')")
+      
+      if isTachyonRichTemporalFluid(fluidNameToCheck) then
+        event.push("log_debug", "  -> Matched Tachyon Rich Temporal Fluid, amount: "..(fluid.amount or 0))
+        puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
+      elseif isSpatiallyEnlargedFluid(fluidNameToCheck) then
+        event.push("log_debug", "  -> Matched Spatially Enlarged Fluid, amount: "..(fluid.amount or 0))
+        puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
+      else
+        event.push("log_debug", "  -> No match")
+      end
+      
+      ::continue::
+    end
+  end
+
+  ---Find dust in items and update puzzle output
+  ---@param items table
+  ---@param puzzleOutput PuzzleOutput
+  ---@return boolean true if dust was found
+  ---@private
+  function obj:findDustInItems(items, puzzleOutput)
+    for _, item in pairs(items) do
+      if item and item.label and string.find(item.label:lower(), "dust") then
+        puzzleOutput.dustLabel = extractDustLabel(item.label)
+        puzzleOutput.dustOriginalLabel = item.label
+        return true
+      end
+    end
+    return false
+  end
+
   ---Get puzzle outputs from both puzzle output interfaces
   ---Checks interface inventory directly, not network content
   ---Identifies tachyon rich temporal fluid, spatially enlarged fluid, and dust
@@ -276,25 +413,8 @@ function magmatterController:new(
     )
 
     -- Debug: Log what we found
-    if #items1 > 0 or #liquids1 > 0 then
-      event.push("log_debug", "Puzzle Output 1 - Items: "..#items1..", Liquids: "..#liquids1)
-      for _, item in pairs(items1) do
-        event.push("log_debug", "  Item: "..(item.label or item.name or "Unknown").." x"..(item.size or 0))
-      end
-      for _, fluid in pairs(liquids1) do
-        event.push("log_debug", "  Fluid: "..(fluid.label or fluid.name or "Unknown").." "..(fluid.amount or 0).."L")
-      end
-    end
-    
-    if #items2 > 0 or #liquids2 > 0 then
-      event.push("log_debug", "Puzzle Output 2 - Items: "..#items2..", Liquids: "..#liquids2)
-      for _, item in pairs(items2) do
-        event.push("log_debug", "  Item: "..(item.label or item.name or "Unknown").." x"..(item.size or 0))
-      end
-      for _, fluid in pairs(liquids2) do
-        event.push("log_debug", "  Fluid: "..(fluid.label or fluid.name or "Unknown").." "..(fluid.amount or 0).."L")
-      end
-    end
+    self:logInterfaceContents(items1, liquids1, "Puzzle Output 1")
+    self:logInterfaceContents(items2, liquids2, "Puzzle Output 2")
 
     ---@type PuzzleOutput
     local puzzleOutput = {
@@ -305,79 +425,13 @@ function magmatterController:new(
       requiredPlasmaAmount = 0
     }
 
-    -- Check both interfaces for tachyon rich temporal fluid
-    -- Prioritize label over name since label is what's displayed in debug output
-    -- Handle empty strings by checking if they're non-empty
-    for _, fluid in pairs(liquids1) do
-      if fluid then
-        local fluidLabel = fluid.label or ""
-        local fluidName = fluid.name or ""
-        local fluidNameToCheck = (fluidLabel ~= "" and fluidLabel or fluidName):lower()
-        event.push("log_debug", "Checking fluid: '"..fluidNameToCheck.."' (name='"..fluidName.."', label='"..fluidLabel.."')")
-        if string.find(fluidNameToCheck, "tachyon") and string.find(fluidNameToCheck, "rich") and string.find(fluidNameToCheck, "temporal") then
-          event.push("log_debug", "  -> Matched Tachyon Rich Temporal Fluid, amount: "..(fluid.amount or 0))
-          puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-        elseif string.find(fluidNameToCheck, "spatially") and string.find(fluidNameToCheck, "enlarged") then
-          event.push("log_debug", "  -> Matched Spatially Enlarged Fluid, amount: "..(fluid.amount or 0))
-          puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
-        else
-          event.push("log_debug", "  -> No match")
-        end
-      end
-    end
+    -- Process fluids from both interfaces
+    self:processFluidsFromInterface(liquids1, puzzleOutput)
+    self:processFluidsFromInterface(liquids2, puzzleOutput)
 
-    for _, fluid in pairs(liquids2) do
-      if fluid then
-        local fluidLabel = fluid.label or ""
-        local fluidName = fluid.name or ""
-        local fluidNameToCheck = (fluidLabel ~= "" and fluidLabel or fluidName):lower()
-        event.push("log_debug", "Checking fluid: '"..fluidNameToCheck.."' (name='"..fluidName.."', label='"..fluidLabel.."')")
-        if string.find(fluidNameToCheck, "tachyon") and string.find(fluidNameToCheck, "rich") and string.find(fluidNameToCheck, "temporal") then
-          event.push("log_debug", "  -> Matched Tachyon Rich Temporal Fluid, amount: "..(fluid.amount or 0))
-          puzzleOutput.tachyonRichAmount = puzzleOutput.tachyonRichAmount + (fluid.amount or 0)
-        elseif string.find(fluidNameToCheck, "spatially") and string.find(fluidNameToCheck, "enlarged") then
-          event.push("log_debug", "  -> Matched Spatially Enlarged Fluid, amount: "..(fluid.amount or 0))
-          puzzleOutput.spatiallyEnlargedAmount = puzzleOutput.spatiallyEnlargedAmount + (fluid.amount or 0)
-        else
-          event.push("log_debug", "  -> No match")
-        end
-      end
-    end
-
-    -- Check both interfaces for dust
-    for _, item in pairs(items1) do
-      if item and item.label and string.find(item.label:lower(), "dust") then
-        -- Extract base label from dust names
-        local label = item.label:match("Pile of%s(.+)%sDust")
-        if label == nil then
-          label = item.label:match("(.+) Dust")
-        end
-        if label == nil then
-          label = item.label
-        end
-        
-        puzzleOutput.dustLabel = label
-        puzzleOutput.dustOriginalLabel = item.label
-        break
-      end
-    end
-
-    if puzzleOutput.dustLabel == nil then
-      for _, item in pairs(items2) do
-        if item and item.label and string.find(item.label:lower(), "dust") then
-          local label = item.label:match("Pile of%s(.+)%sDust")
-          if label == nil then
-            label = item.label:match("(.+) Dust")
-          end
-          if label == nil then
-            label = item.label
-          end
-          
-          puzzleOutput.dustLabel = label
-          puzzleOutput.dustOriginalLabel = item.label
-          break
-        end
-      end
+    -- Find dust in items (check interface 1 first, then interface 2)
+    if not self:findDustInItems(items1, puzzleOutput) then
+      self:findDustInItems(items2, puzzleOutput)
     end
 
     -- Debug: Log detected values before validation
@@ -385,7 +439,6 @@ function magmatterController:new(
 
     -- Validate we have all required outputs
     if puzzleOutput.tachyonRichAmount == 0 or puzzleOutput.spatiallyEnlargedAmount == 0 or puzzleOutput.dustLabel == nil then
-      -- Log what's missing for debugging
       local missing = {}
       if puzzleOutput.tachyonRichAmount == 0 then
         table.insert(missing, "Tachyon Rich Temporal Fluid")
@@ -402,11 +455,11 @@ function magmatterController:new(
 
     -- Calculate required plasma amount
     -- Note: Detected amounts are in mB from transposer
-    -- The absolute difference (spatial - tachyon) multiplied by 144 gives the required plasma amount in mB
+    -- The absolute difference (spatial - tachyon) multiplied by PLASMA_CONVERSION_FACTOR gives the required plasma amount in mB
     local differenceMB = math.abs(puzzleOutput.spatiallyEnlargedAmount - puzzleOutput.tachyonRichAmount)
-    puzzleOutput.requiredPlasmaAmount = differenceMB * 144 -- Required plasma in mB
+    puzzleOutput.requiredPlasmaAmount = differenceMB * PLASMA_CONVERSION_FACTOR
 
-    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.."mB ("..math.floor(puzzleOutput.requiredPlasmaAmount/144).." ingots)")
+    event.push("log_info", "Detected puzzle output: Tachyon Rich="..puzzleOutput.tachyonRichAmount.."mB, Spatially Enlarged="..puzzleOutput.spatiallyEnlargedAmount.."mB, Dust="..puzzleOutput.dustLabel..", Required Plasma="..puzzleOutput.requiredPlasmaAmount.."mB ("..math.floor(puzzleOutput.requiredPlasmaAmount/PLASMA_CONVERSION_FACTOR).." ingots)")
 
     return puzzleOutput
   end
@@ -484,6 +537,156 @@ function magmatterController:new(
     return success1 and success2
   end
 
+  ---Transfer a single item stack from interface to main net
+  ---@param transposerProxy table
+  ---@param outputSide number
+  ---@param mainSide number
+  ---@param slot number
+  ---@param stack table
+  ---@param interfaceName string
+  ---@private
+  function obj:transferItemStack(transposerProxy, outputSide, mainSide, slot, stack, interfaceName)
+    event.push("log_info", "Pulling "..stack.size.."x "..(stack.label or stack.name or "Unknown").." from "..interfaceName.." slot "..slot)
+    
+    local transferred = 0
+    local attempt = 0
+    
+    while transferred < stack.size and attempt < MAX_ITEM_TRANSFER_ATTEMPTS do
+      attempt = attempt + 1
+      local transferAmount = math.min(stack.size - transferred, MAX_ITEM_STACK_SIZE)
+      local result = transposerProxy.transferItem(outputSide, mainSide, transferAmount, slot)
+      
+      if result then
+        transferred = transferred + transferAmount
+      else
+        os.sleep(TRANSFER_DELAY_SHORT)
+      end
+    end
+    
+    if transferred < stack.size then
+      event.push("log_warning", "Only transferred "..transferred.." of "..(stack.label or stack.name).." from "..interfaceName)
+    end
+  end
+
+  ---Pull all items from interface inventory slots
+  ---@param transposerProxy table
+  ---@param outputSide number
+  ---@param mainSide number
+  ---@param interfaceName string
+  ---@private
+  function obj:pullItemsFromInterface(transposerProxy, outputSide, mainSide, interfaceName)
+    local inventorySize = transposerProxy.getInventorySize(outputSide)
+    if not inventorySize or inventorySize == 0 then
+      return
+    end
+    
+    for slot = 1, inventorySize do
+      local stack = transposerProxy.getStackInSlot(outputSide, slot)
+      if stack and stack.size and stack.size > 0 then
+        self:transferItemStack(transposerProxy, outputSide, mainSide, slot, stack, interfaceName)
+      end
+    end
+  end
+
+  ---Transfer fluid from a single tank with retry logic
+  ---@param transposerProxy table
+  ---@param outputSide number
+  ---@param mainSide number
+  ---@param tank number
+  ---@param interfaceName string
+  ---@private
+  function obj:transferFluidFromTank(transposerProxy, outputSide, mainSide, tank, interfaceName)
+    local attempt = 0
+    local consecutiveFailures = 0
+    local lastFluidName = nil
+    
+    while attempt < MAX_FLUID_TRANSFER_ATTEMPTS do
+      attempt = attempt + 1
+      local fluid = transposerProxy.getFluidInTank(outputSide, tank)
+      
+      if not fluid or not fluid.amount or fluid.amount == 0 then
+        break -- Tank is empty
+      end
+      
+      local currentFluidName = fluid.label or fluid.name or "Unknown"
+      
+      -- Check if fluid type changed (multiple fluids in same tank)
+      if lastFluidName and lastFluidName ~= currentFluidName then
+        event.push("log_info", "Fluid type changed in tank "..tank.." from "..lastFluidName.." to "..currentFluidName)
+        consecutiveFailures = 0
+      end
+      lastFluidName = currentFluidName
+      
+      if attempt == 1 then
+        event.push("log_info", "Pulling "..fluid.amount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank)
+      end
+      
+      -- Calculate transfer amount based on failure count
+      local maxTransfer = MAX_FLUID_TRANSFER
+      if consecutiveFailures > 0 then
+        maxTransfer = math.max(100, MAX_FLUID_TRANSFER / (consecutiveFailures + 1))
+      end
+      
+      local transferAmount = math.min(fluid.amount, maxTransfer)
+      local fluidSide = convertTankIndexToSideIndex(tank)
+      local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, fluidSide)
+      
+      if result then
+        consecutiveFailures = 0
+        os.sleep(TRANSFER_DELAY_SHORT)
+      else
+        consecutiveFailures = consecutiveFailures + 1
+        
+        -- Try smaller amount after multiple failures
+        if consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD then
+          local smallAmount = math.min(fluid.amount, SMALL_FLUID_TRANSFER)
+          local smallResult = transposerProxy.transferFluid(outputSide, mainSide, smallAmount, fluidSide)
+          
+          if smallResult then
+            consecutiveFailures = 0
+            event.push("log_info", "Successfully transferred "..smallAmount.."mB using smaller amount")
+            os.sleep(TRANSFER_DELAY_SHORT)
+          else
+            event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..", consecutive failures: "..consecutiveFailures..")")
+            
+            if consecutiveFailures >= MAX_CONSECUTIVE_FAILURES then
+              event.push("log_error", "Giving up on transferring "..currentFluidName.." from "..interfaceName.." tank "..tank.." after "..consecutiveFailures.." consecutive failures. Fluid may be incompatible or destination may be full.")
+              break
+            end
+            
+            os.sleep(TRANSFER_DELAY_LONG)
+          end
+        else
+          event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..")")
+          os.sleep(TRANSFER_DELAY_MEDIUM)
+        end
+      end
+    end
+    
+    -- Final check for remaining fluid
+    local remainingFluid = transposerProxy.getFluidInTank(outputSide, tank)
+    if remainingFluid and remainingFluid.amount and remainingFluid.amount > 0 then
+      event.push("log_warning", "Still "..remainingFluid.amount.."mB of "..(remainingFluid.label or remainingFluid.name).." remaining in "..interfaceName.." tank "..tank)
+    end
+  end
+
+  ---Pull all liquids from interface fluid tanks
+  ---@param transposerProxy table
+  ---@param outputSide number
+  ---@param mainSide number
+  ---@param interfaceName string
+  ---@private
+  function obj:pullFluidsFromInterface(transposerProxy, outputSide, mainSide, interfaceName)
+    local tankCount = transposerProxy.getTankCount(outputSide)
+    if not tankCount or tankCount == 0 then
+      return
+    end
+    
+    for tank = 1, tankCount do
+      self:transferFluidFromTank(transposerProxy, outputSide, mainSide, tank, interfaceName)
+    end
+  end
+
   ---Pull all items and liquids from interface inventory to main net via transposer
   ---Reads directly from interface inventory slots/tanks, not network
   ---@param transposerProxy table
@@ -493,127 +696,8 @@ function magmatterController:new(
   ---@return boolean
   ---@private
   function obj:pullAllFromInterfaceInventory(transposerProxy, outputSide, mainSide, interfaceName)
-    -- Pull all items from interface inventory slots
-    local inventorySize = transposerProxy.getInventorySize(outputSide)
-    if inventorySize and inventorySize > 0 then
-      for slot = 1, inventorySize do
-        local stack = transposerProxy.getStackInSlot(outputSide, slot)
-        if stack and stack.size and stack.size > 0 then
-          event.push("log_info", "Pulling "..stack.size.."x "..(stack.label or stack.name or "Unknown").." from "..interfaceName.." slot "..slot)
-          local transferred = 0
-          local maxAttempts = 50
-          local attempt = 0
-          
-          while transferred < stack.size and attempt < maxAttempts do
-            attempt = attempt + 1
-            local transferAmount = math.min(stack.size - transferred, 64)
-            local result = transposerProxy.transferItem(outputSide, mainSide, transferAmount, slot)
-            
-            if result then
-              transferred = transferred + transferAmount
-            else
-              os.sleep(0.05) -- 1 tick delay
-            end
-          end
-          
-          if transferred < stack.size then
-            event.push("log_warning", "Only transferred "..transferred.." of "..(stack.label or stack.name).." from "..interfaceName)
-          end
-        end
-      end
-    end
-
-    -- Pull all liquids from interface fluid tanks
-    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1 mB
-    local tankCount = transposerProxy.getTankCount(outputSide)
-    if tankCount and tankCount > 0 then
-      for tank = 1, tankCount do
-        local maxAttempts = 100
-        local attempt = 0
-        local consecutiveFailures = 0
-        local lastFluidName = nil
-        
-        while attempt < maxAttempts do
-          attempt = attempt + 1
-          local fluid = transposerProxy.getFluidInTank(outputSide, tank)
-          
-          if not fluid or not fluid.amount or fluid.amount == 0 then
-            -- Tank is empty, we're done
-            break
-          end
-          
-          local currentFluidName = fluid.label or fluid.name or "Unknown"
-          
-          -- Check if fluid type changed (multiple fluids in same tank)
-          if lastFluidName and lastFluidName ~= currentFluidName then
-            event.push("log_info", "Fluid type changed in tank "..tank.." from "..lastFluidName.." to "..currentFluidName)
-            -- Reset failure counter for new fluid type
-            consecutiveFailures = 0
-          end
-          lastFluidName = currentFluidName
-          
-          if attempt == 1 then
-            event.push("log_info", "Pulling "..fluid.amount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank)
-          end
-          
-          -- Try smaller amounts if previous transfer failed
-          local maxTransfer = 16000
-          if consecutiveFailures > 0 then
-            -- Try progressively smaller amounts
-            maxTransfer = math.max(100, 16000 / (consecutiveFailures + 1))
-          end
-          
-          -- Transfer up to maxTransfer mB at a time
-          -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
-          local fluidSide = tank - 1
-          local transferAmount = math.min(fluid.amount, maxTransfer)
-          local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, fluidSide)
-          
-          if result then
-            -- Successfully transferred, reset failure counter
-            consecutiveFailures = 0
-            os.sleep(0.05) -- Small delay to let the system update
-          else
-            -- Transfer failed
-            consecutiveFailures = consecutiveFailures + 1
-            
-            -- If we've failed multiple times with the same amount, try a much smaller amount
-            if consecutiveFailures >= 3 then
-              local smallAmount = math.min(fluid.amount, 10) -- Try just 10 mB
-              local fluidSide = tank - 1 -- Convert tank index to side index
-              local smallResult = transposerProxy.transferFluid(outputSide, mainSide, smallAmount, fluidSide)
-              if smallResult then
-                consecutiveFailures = 0
-                event.push("log_info", "Successfully transferred "..smallAmount.."mB using smaller amount")
-                os.sleep(0.05)
-              else
-                -- Even small amount failed, destination might be full or blocked
-                event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..", consecutive failures: "..consecutiveFailures..")")
-                
-                -- If we've failed 5 times in a row (reduced from 10), give up on this fluid
-                -- This prevents getting stuck on fluids that can't be transferred
-                if consecutiveFailures >= 5 then
-                  event.push("log_error", "Giving up on transferring "..currentFluidName.." from "..interfaceName.." tank "..tank.." after "..consecutiveFailures.." consecutive failures. Fluid may be incompatible or destination may be full.")
-                  break
-                end
-                
-                os.sleep(0.2) -- Wait longer before retrying
-              end
-            else
-              event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..")")
-              os.sleep(0.1) -- Wait a bit before retrying
-            end
-          end
-        end
-        
-        -- Final check to see if anything is left
-        local remainingFluid = transposerProxy.getFluidInTank(outputSide, tank)
-        if remainingFluid and remainingFluid.amount and remainingFluid.amount > 0 then
-          event.push("log_warning", "Still "..remainingFluid.amount.."mB of "..(remainingFluid.label or remainingFluid.name).." remaining in "..interfaceName.." tank "..tank)
-        end
-      end
-    end
-
+    self:pullItemsFromInterface(transposerProxy, outputSide, mainSide, interfaceName)
+    self:pullFluidsFromInterface(transposerProxy, outputSide, mainSide, interfaceName)
     return true
   end
 
@@ -656,62 +740,52 @@ function magmatterController:new(
     return tachyonSuccess and spatiallyEnlargedSuccess and plasmaSuccess
   end
 
-  ---Pull fluid from ready interface inventory and transfer to puzzle output via transposer
-  ---Ready interface is below transposer, puzzle output is above transposer
-  ---Checks interface inventory directly, not network
+  ---Find fluid in interface tanks by name
   ---@param transposerProxy table
-  ---@param sourceSide number Side connected to ready liquid interface (below)
-  ---@param destSide number Side connected to puzzle output interface (above)
+  ---@param sourceSide number
   ---@param fluidName string
-  ---@param requiredAmount number
-  ---@return boolean
+  ---@return boolean found
+  ---@return number availableAmount
+  ---@return number tankIndex
   ---@private
-  function obj:pullFluidFromReadyInterface(transposerProxy, sourceSide, destSide, fluidName, requiredAmount)
-    -- requiredAmount is in mB (from puzzle output detection)
-    event.push("log_info", "Pulling "..requiredAmount.."mB of "..fluidName)
-
-    -- Check if fluid is available in interface inventory tanks
+  function obj:findFluidInTanks(transposerProxy, sourceSide, fluidName)
     local tankCount = transposerProxy.getTankCount(sourceSide)
-    local found = false
-    local availableAmount = 0
-    local tankIndex = nil
-
-    if tankCount and tankCount > 0 then
-      for tank = 1, tankCount do
-        local fluid = transposerProxy.getFluidInTank(sourceSide, tank)
-        if fluid and fluid.amount and fluid.amount > 0 then
-          local fluidLabel = fluid.label or fluid.name or ""
-          local fluidLabelLower = fluidLabel:lower()
-          if string.find(fluidLabelLower, fluidName:lower()) or 
-             (fluidName == "Tachyon Rich Temporal Fluid" and string.find(fluidLabelLower, "tachyon") and string.find(fluidLabelLower, "rich") and string.find(fluidLabelLower, "temporal")) or
-             (fluidName == "Spatially Enlarged Fluid" and string.find(fluidLabelLower, "spatially") and string.find(fluidLabelLower, "enlarged")) then
-            found = true
-            availableAmount = fluid.amount
-            tankIndex = tank
-            break
-          end
+    if not tankCount or tankCount == 0 then
+      return false, 0, nil
+    end
+    
+    for tank = 1, tankCount do
+      local fluid = transposerProxy.getFluidInTank(sourceSide, tank)
+      if fluid and fluid.amount and fluid.amount > 0 then
+        local fluidLabel = fluid.label or fluid.name or ""
+        local fluidLabelLower = fluidLabel:lower()
+        local fluidNameLower = fluidName:lower()
+        
+        if string.find(fluidLabelLower, fluidNameLower) or 
+           (fluidName == "Tachyon Rich Temporal Fluid" and isTachyonRichTemporalFluid(fluidLabelLower)) or
+           (fluidName == "Spatially Enlarged Fluid" and isSpatiallyEnlargedFluid(fluidLabelLower)) then
+          return true, fluid.amount, tank
         end
       end
     end
+    
+    return false, 0, nil
+  end
 
-    if not found then
-      event.push("log_error", fluidName.." not found in interface inventory")
-      return false
-    end
-
-    if availableAmount < requiredAmount then
-      event.push("log_warning", "Only "..availableAmount.."mB available, need "..requiredAmount.."mB of "..fluidName)
-    end
-
-    -- Note: Transposer amounts are in mB (millibuckets), 1 L = 1 mB
-    -- The puzzleOutput amounts are detected from transposer, so they're already in mB
-    local requiredAmountMB = requiredAmount -- Already in mB from detection
-    local amountToTransfer = math.min(availableAmount, requiredAmountMB)
+  ---Transfer fluid with retry logic
+  ---@param transposerProxy table
+  ---@param sourceSide number
+  ---@param destSide number
+  ---@param tankIndex number
+  ---@param amountToTransfer number
+  ---@param fluidName string
+  ---@return number transferred
+  ---@private
+  function obj:transferFluidWithRetry(transposerProxy, sourceSide, destSide, tankIndex, amountToTransfer, fluidName)
     local transferred = 0
-    local maxAttempts = 200
     local attempt = 0
-
-    while transferred < amountToTransfer and attempt < maxAttempts do
+    
+    while transferred < amountToTransfer and attempt < MAX_TRANSFER_ATTEMPTS do
       attempt = attempt + 1
       
       -- Refresh fluid state to get current amount
@@ -722,22 +796,51 @@ function magmatterController:new(
       end
       
       local remainingNeeded = amountToTransfer - transferred
-      local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
-      -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
-      local fluidSide = tankIndex - 1
+      local transferAmount = math.min(currentFluid.amount, remainingNeeded, MAX_FLUID_TRANSFER)
+      local fluidSide = convertTankIndexToSideIndex(tankIndex)
       local result = transposerProxy.transferFluid(sourceSide, destSide, transferAmount, fluidSide)
 
       if result then
         transferred = transferred + transferAmount
-        if attempt % 20 == 0 then
+        if attempt % PROGRESS_REPORT_INTERVAL == 0 then
           event.push("log_info", "Transferred "..transferred.."mB of "..fluidName.." (target: "..amountToTransfer.."mB)")
         end
-        os.sleep(0.05) -- Small delay to let the system update
+        os.sleep(TRANSFER_DELAY_SHORT)
       else
         event.push("log_warning", "Transfer attempt "..attempt.." failed for "..fluidName)
-        os.sleep(0.1) -- Wait a bit longer before retrying
+        os.sleep(TRANSFER_DELAY_MEDIUM)
       end
     end
+    
+    return transferred
+  end
+
+  ---Pull fluid from ready interface inventory and transfer to puzzle output via transposer
+  ---Ready interface is below transposer, puzzle output is above transposer
+  ---Checks interface inventory directly, not network
+  ---@param transposerProxy table
+  ---@param sourceSide number Side connected to ready liquid interface (below)
+  ---@param destSide number Side connected to puzzle output interface (above)
+  ---@param fluidName string
+  ---@param requiredAmount number Amount in mB
+  ---@return boolean
+  ---@private
+  function obj:pullFluidFromReadyInterface(transposerProxy, sourceSide, destSide, fluidName, requiredAmount)
+    event.push("log_info", "Pulling "..requiredAmount.."mB of "..fluidName)
+
+    local found, availableAmount, tankIndex = self:findFluidInTanks(transposerProxy, sourceSide, fluidName)
+
+    if not found then
+      event.push("log_error", fluidName.." not found in interface inventory")
+      return false
+    end
+
+    if availableAmount < requiredAmount then
+      event.push("log_warning", "Only "..availableAmount.."mB available, need "..requiredAmount.."mB of "..fluidName)
+    end
+
+    local amountToTransfer = math.min(availableAmount, requiredAmount)
+    local transferred = self:transferFluidWithRetry(transposerProxy, sourceSide, destSide, tankIndex, amountToTransfer, fluidName)
 
     if transferred < amountToTransfer then
       event.push("log_warning", "Only transferred "..transferred.."mB of "..fluidName.." out of "..amountToTransfer.."mB requested")
@@ -748,6 +851,36 @@ function magmatterController:new(
     return true
   end
 
+  ---Find plasma in interface tanks by dust label
+  ---@param transposerProxy table
+  ---@param readySide number
+  ---@param dustLabel string
+  ---@return boolean found
+  ---@return number availableAmount
+  ---@return string plasmaLabel
+  ---@return number tankIndex
+  ---@private
+  function obj:findPlasmaInTanks(transposerProxy, readySide, dustLabel)
+    local tankCount = transposerProxy.getTankCount(readySide)
+    if not tankCount or tankCount == 0 then
+      return false, 0, nil, nil
+    end
+    
+    for tank = 1, tankCount do
+      local fluid = transposerProxy.getFluidInTank(readySide, tank)
+      if fluid and fluid.amount and fluid.amount > 0 then
+        local fluidLabel = fluid.label or fluid.name or ""
+        local fluidNameLower = fluidLabel:lower()
+        
+        if isPlasmaFluid(fluidNameLower, dustLabel) then
+          return true, fluid.amount, fluidLabel, tank
+        end
+      end
+    end
+    
+    return false, 0, nil, nil
+  end
+
   ---Pull plasma from ready liquid interfaces (all 3) and transfer to puzzle output
   ---Plasma interfaces are below transposers, puzzle output is above transposers
   ---@param dustLabel string
@@ -755,42 +888,27 @@ function magmatterController:new(
   ---@return boolean
   ---@private
   function obj:pullPlasmaFromReadyInterfaces(dustLabel, requiredAmountMB)
-    event.push("log_info", "Pulling "..requiredAmountMB.."mB ("..math.floor(requiredAmountMB/144).." ingots) of "..dustLabel.." plasma from all ready interfaces")
+    local ingots = math.floor(requiredAmountMB / PLASMA_CONVERSION_FACTOR)
+    event.push("log_info", "Pulling "..requiredAmountMB.."mB ("..ingots.." ingots) of "..dustLabel.." plasma from all ready interfaces")
+    
     local totalTransferred = 0
     local interfaces = {
-      {proxy = self.readyLiquid1MeInterfaceProxy, transposer = self.readyLiquid1TransposerProxy, readySide = self.readyLiquid1TransposerReadySide, outputSide = self.readyLiquid1TransposerOutputSide, name = "Ready Liquid 1"},
-      {proxy = self.readyLiquid2MeInterfaceProxy, transposer = self.readyLiquid2TransposerProxy, readySide = self.readyLiquid2TransposerReadySide, outputSide = self.readyLiquid2TransposerOutputSide, name = "Ready Liquid 2"},
-      {proxy = self.readyLiquid3MeInterfaceProxy, transposer = self.readyLiquid3TransposerProxy, readySide = self.readyLiquid3TransposerReadySide, outputSide = self.readyLiquid3TransposerOutputSide, name = "Ready Liquid 3"}
+      {transposer = self.readyLiquid1TransposerProxy, readySide = self.readyLiquid1TransposerReadySide, outputSide = self.readyLiquid1TransposerOutputSide, name = "Ready Liquid 1"},
+      {transposer = self.readyLiquid2TransposerProxy, readySide = self.readyLiquid2TransposerReadySide, outputSide = self.readyLiquid2TransposerOutputSide, name = "Ready Liquid 2"},
+      {transposer = self.readyLiquid3TransposerProxy, readySide = self.readyLiquid3TransposerReadySide, outputSide = self.readyLiquid3TransposerOutputSide, name = "Ready Liquid 3"}
     }
 
-    -- Search all interfaces for the required plasma (check interface inventory directly)
+    -- Search all interfaces for the required plasma
     for _, interfaceData in ipairs(interfaces) do
       if totalTransferred >= requiredAmountMB then
         break
       end
 
-      -- Check interface inventory tanks directly
-      local tankCount = interfaceData.transposer.getTankCount(interfaceData.readySide)
-      local found = false
-      local availableAmount = 0
-      local plasmaLabel = nil
-      local tankIndex = nil
-
-      if tankCount and tankCount > 0 then
-        for tank = 1, tankCount do
-          local fluid = interfaceData.transposer.getFluidInTank(interfaceData.readySide, tank)
-          if fluid and fluid.amount and fluid.amount > 0 then
-            local fluidLabel = fluid.label or fluid.name or ""
-            if string.find(fluidLabel:lower(), "plasma") and string.find(fluidLabel:lower(), dustLabel:lower()) then
-              found = true
-              availableAmount = fluid.amount
-              plasmaLabel = fluidLabel
-              tankIndex = tank
-              break
-            end
-          end
-        end
-      end
+      local found, availableAmount, plasmaLabel, tankIndex = self:findPlasmaInTanks(
+        interfaceData.transposer,
+        interfaceData.readySide,
+        dustLabel
+      )
 
       if found then
         local remainingNeeded = requiredAmountMB - totalTransferred
@@ -798,43 +916,16 @@ function magmatterController:new(
         
         event.push("log_info", "Found "..availableAmount.."mB of "..plasmaLabel.." in "..interfaceData.name..", transferring "..amountToTransfer.."mB")
 
-        local transferred = 0
-        local maxAttempts = 200
-        local attempt = 0
-
-        while transferred < amountToTransfer and attempt < maxAttempts do
-          attempt = attempt + 1
-          
-          -- Refresh fluid state to get current amount
-          local currentFluid = interfaceData.transposer.getFluidInTank(interfaceData.readySide, tankIndex)
-          if not currentFluid or not currentFluid.amount or currentFluid.amount == 0 then
-            event.push("log_warning", "Plasma "..plasmaLabel.." no longer available in "..interfaceData.name.." tank")
-            break
-          end
-          
-          local remainingNeeded = amountToTransfer - transferred
-          local transferAmount = math.min(currentFluid.amount, remainingNeeded, 16000)
-          -- Convert tank index (1-6) to side index (0-5): tank 1 = side 0 (down), tank 2 = side 1 (up), etc.
-          local fluidSide = tankIndex - 1
-          local result = interfaceData.transposer.transferFluid(
-            interfaceData.readySide,
-            interfaceData.outputSide,
-            transferAmount,
-            fluidSide
-          )
-
-          if result then
-            transferred = transferred + transferAmount
-            totalTransferred = totalTransferred + transferAmount
-            if attempt % 20 == 0 then
-              event.push("log_info", "Transferred "..transferred.."mB of "..plasmaLabel.." from "..interfaceData.name.." (total: "..totalTransferred.."mB)")
-            end
-            os.sleep(0.05) -- Small delay to let the system update
-          else
-            event.push("log_warning", "Transfer attempt "..attempt.." failed for "..plasmaLabel.." from "..interfaceData.name)
-            os.sleep(0.1) -- Wait a bit longer before retrying
-          end
-        end
+        local transferred = self:transferFluidWithRetry(
+          interfaceData.transposer,
+          interfaceData.readySide,
+          interfaceData.outputSide,
+          tankIndex,
+          amountToTransfer,
+          plasmaLabel
+        )
+        
+        totalTransferred = totalTransferred + transferred
 
         if transferred < amountToTransfer then
           event.push("log_warning", "Only transferred "..transferred.."mB of "..plasmaLabel.." from "..interfaceData.name.." out of "..amountToTransfer.."mB requested")
@@ -845,12 +936,47 @@ function magmatterController:new(
     end
 
     if totalTransferred < requiredAmountMB then
-      event.push("log_error", "Only transferred "..totalTransferred.."mB ("..math.floor(totalTransferred/144).." ingots) of plasma out of "..requiredAmountMB.."mB ("..math.floor(requiredAmountMB/144).." ingots) requested")
+      local transferredIngots = math.floor(totalTransferred / PLASMA_CONVERSION_FACTOR)
+      local requiredIngots = math.floor(requiredAmountMB / PLASMA_CONVERSION_FACTOR)
+      event.push("log_error", "Only transferred "..totalTransferred.."mB ("..transferredIngots.." ingots) of plasma out of "..requiredAmountMB.."mB ("..requiredIngots.." ingots) requested")
       return false
     end
 
-    event.push("log_info", "Successfully transferred "..totalTransferred.."mB ("..math.floor(totalTransferred/144).." ingots) of "..dustLabel.." plasma from ready interfaces")
+    local totalIngots = math.floor(totalTransferred / PLASMA_CONVERSION_FACTOR)
+    event.push("log_info", "Successfully transferred "..totalTransferred.."mB ("..totalIngots.." ingots) of "..dustLabel.." plasma from ready interfaces")
     return true
+  end
+
+  ---Check for specific fluid in liquids list
+  ---@param fluids table
+  ---@param fluidName string
+  ---@param interfaceName string
+  ---@return boolean found
+  ---@private
+  function obj:checkForFluidInLiquids(fluids, fluidName, interfaceName)
+    for _, fluid in pairs(fluids) do
+      if not fluid then
+        goto continue
+      end
+      
+      local fluidNameToCheck = getFluidNameToCheck(fluid)
+      local isMatch = false
+      
+      if fluidName == "Tachyon Rich Temporal Fluid" then
+        isMatch = isTachyonRichTemporalFluid(fluidNameToCheck)
+      elseif fluidName == "Spatially Enlarged Fluid" then
+        isMatch = isSpatiallyEnlargedFluid(fluidNameToCheck)
+      end
+      
+      if isMatch then
+        event.push("log_info", "Found "..(fluid.amount or 0).."mB "..fluidName:lower().." in "..interfaceName)
+        return true
+      end
+      
+      ::continue::
+    end
+    
+    return false
   end
 
   ---Return liquids to puzzle output interfaces
@@ -861,8 +987,6 @@ function magmatterController:new(
     if self.stateMachine.data.puzzleOutput == nil then
       return false
     end
-
-    local puzzleOutput = self.stateMachine.data.puzzleOutput
 
     event.push("log_info", "Verifying liquids in puzzle output interfaces")
 
@@ -882,39 +1006,14 @@ function magmatterController:new(
       self.puzzleOutput2TransposerOutputSide
     )
 
-    local tachyonFound = false
-    local spatiallyEnlargedFound = false
-
-    -- Check both interfaces
+    -- Check both interfaces for required fluids
     -- Note: Plasmas are in ready liquid interfaces, not puzzle output
     -- Puzzle output only contains tachyon, spatially enlarged fluid, and dust
-    for _, fluid in pairs(liquids1) do
-      if fluid then
-        local fluidLabel = fluid.label or fluid.name or ""
-        local fluidName = fluidLabel:lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
-          tachyonFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB tachyon rich in puzzle output 1")
-        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
-          spatiallyEnlargedFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB spatially enlarged in puzzle output 1")
-        end
-      end
-    end
-
-    for _, fluid in pairs(liquids2) do
-      if fluid then
-        local fluidLabel = fluid.label or fluid.name or ""
-        local fluidName = fluidLabel:lower()
-        if string.find(fluidName, "tachyon") and string.find(fluidName, "rich") and string.find(fluidName, "temporal") then
-          tachyonFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB tachyon rich in puzzle output 2")
-        elseif string.find(fluidName, "spatially") and string.find(fluidName, "enlarged") then
-          spatiallyEnlargedFound = true
-          event.push("log_info", "Found "..(fluid.amount or 0).."mB spatially enlarged in puzzle output 2")
-        end
-      end
-    end
+    local tachyonFound = self:checkForFluidInLiquids(liquids1, "Tachyon Rich Temporal Fluid", "puzzle output 1") or
+                         self:checkForFluidInLiquids(liquids2, "Tachyon Rich Temporal Fluid", "puzzle output 2")
+    
+    local spatiallyEnlargedFound = self:checkForFluidInLiquids(liquids1, "Spatially Enlarged Fluid", "puzzle output 1") or
+                                  self:checkForFluidInLiquids(liquids2, "Spatially Enlarged Fluid", "puzzle output 2")
 
     if not tachyonFound then
       event.push("log_warning", "Tachyon rich temporal fluid not found in puzzle output interfaces")
