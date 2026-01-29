@@ -54,7 +54,9 @@ end
 local function loop()
   while true do
     config.controller:loop()
-    os.sleep(0.1)
+    -- Very small sleep to minimize delay between state transitions
+    -- State transitions happen immediately in init functions, so this just prevents CPU spinning
+    os.sleep(0.05)
   end
 end
 
