@@ -531,6 +531,8 @@ function magmatterController:new(
       for tank = 1, tankCount do
         local maxAttempts = 100
         local attempt = 0
+        local consecutiveFailures = 0
+        local lastFluidName = nil
         
         while attempt < maxAttempts do
           attempt = attempt + 1
@@ -541,21 +543,63 @@ function magmatterController:new(
             break
           end
           
+          local currentFluidName = fluid.label or fluid.name or "Unknown"
+          
+          -- Check if fluid type changed (multiple fluids in same tank)
+          if lastFluidName and lastFluidName ~= currentFluidName then
+            event.push("log_info", "Fluid type changed in tank "..tank.." from "..lastFluidName.." to "..currentFluidName)
+            -- Reset failure counter for new fluid type
+            consecutiveFailures = 0
+          end
+          lastFluidName = currentFluidName
+          
           if attempt == 1 then
-            event.push("log_info", "Pulling "..fluid.amount.."mB of "..(fluid.label or fluid.name or "Unknown").." from "..interfaceName.." tank "..tank)
+            event.push("log_info", "Pulling "..fluid.amount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank)
           end
           
-          -- Transfer up to 16000 mB at a time (16 buckets)
-          local transferAmount = math.min(fluid.amount, 16000)
+          -- Try smaller amounts if previous transfer failed
+          local maxTransfer = 16000
+          if consecutiveFailures > 0 then
+            -- Try progressively smaller amounts
+            maxTransfer = math.max(100, 16000 / (consecutiveFailures + 1))
+          end
+          
+          -- Transfer up to maxTransfer mB at a time
+          local transferAmount = math.min(fluid.amount, maxTransfer)
           local result = transposerProxy.transferFluid(outputSide, mainSide, transferAmount, tank)
           
           if result then
-            -- Successfully transferred, check if there's more
+            -- Successfully transferred, reset failure counter
+            consecutiveFailures = 0
             os.sleep(0.05) -- Small delay to let the system update
           else
-            -- Transfer failed, might be full or blocked
-            event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..(fluid.label or fluid.name).." from "..interfaceName.." tank "..tank)
-            os.sleep(0.1) -- Wait a bit longer before retrying
+            -- Transfer failed
+            consecutiveFailures = consecutiveFailures + 1
+            
+            -- If we've failed multiple times with the same amount, try a much smaller amount
+            if consecutiveFailures >= 3 then
+              local smallAmount = math.min(fluid.amount, 10) -- Try just 10 mB
+              local smallResult = transposerProxy.transferFluid(outputSide, mainSide, smallAmount, tank)
+              if smallResult then
+                consecutiveFailures = 0
+                event.push("log_info", "Successfully transferred "..smallAmount.."mB using smaller amount")
+                os.sleep(0.05)
+              else
+                -- Even small amount failed, destination might be full or blocked
+                event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..", consecutive failures: "..consecutiveFailures..")")
+                
+                -- If we've failed 10 times in a row, give up on this fluid
+                if consecutiveFailures >= 10 then
+                  event.push("log_error", "Giving up on transferring "..currentFluidName.." from "..interfaceName.." tank "..tank.." after "..consecutiveFailures.." consecutive failures")
+                  break
+                end
+                
+                os.sleep(0.2) -- Wait longer before retrying
+              end
+            else
+              event.push("log_warning", "Failed to transfer "..transferAmount.."mB of "..currentFluidName.." from "..interfaceName.." tank "..tank.." (attempt "..attempt..")")
+              os.sleep(0.1) -- Wait a bit before retrying
+            end
           end
         end
         
